@@ -136,6 +136,25 @@
       text-transform: uppercase;
     }
 
+    .history-search {
+      width: 100%;
+      min-height: 38px;
+      padding: 8px 10px;
+      color: #f8fafc;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 8px;
+      outline: none;
+    }
+
+    .history-search::placeholder {
+      color: #aebdcc;
+    }
+
+    .history-search:focus {
+      border-color: rgba(112, 205, 255, 0.8);
+    }
+
     .history-list {
       display: flex;
       flex: 1;
@@ -259,6 +278,7 @@
 
     .table-panel {
       display: flex;
+      flex-direction: column;
       flex: 1;
       min-height: 420px;
       min-width: 0;
@@ -266,6 +286,69 @@
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 8px;
+    }
+
+    .table-tools {
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) auto auto auto auto;
+      gap: 10px;
+      align-items: center;
+      padding: 12px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfe;
+    }
+
+    .search-input,
+    .select-input {
+      min-height: 38px;
+      padding: 8px 10px;
+      color: var(--text);
+      background: #ffffff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      outline: none;
+    }
+
+    .search-input:focus,
+    .select-input:focus {
+      border-color: var(--accent);
+    }
+
+    .tool-button {
+      min-height: 38px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      color: #ffffff;
+      background: #344054;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .tool-button:hover {
+      background: #1f2937;
+    }
+
+    .view-tabs {
+      display: inline-flex;
+      gap: 4px;
+      padding: 3px;
+      background: #edf0f4;
+      border-radius: 8px;
+    }
+
+    .tab-button {
+      min-height: 32px;
+      padding: 6px 10px;
+      color: #475467;
+      background: transparent;
+      border-radius: 6px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .tab-button.active {
+      color: #ffffff;
+      background: var(--accent);
     }
 
     .table-wrap {
@@ -332,6 +415,11 @@
     .missing-alert {
       color: var(--danger);
       font-weight: 760;
+    }
+
+    .empty-row {
+      color: var(--muted);
+      text-align: center;
     }
 
     .empty-state {
@@ -490,6 +578,15 @@
       .summary {
         grid-template-columns: 1fr 1fr;
       }
+
+      .table-tools {
+        grid-template-columns: 1fr;
+      }
+
+      .view-tabs {
+        width: 100%;
+        overflow-x: auto;
+      }
     }
 
     @media (max-width: 560px) {
@@ -528,6 +625,7 @@
         <span>歷史資料集</span>
         <span id="historyCount">0</span>
       </div>
+      <input class="history-search" id="historySearch" type="search" placeholder="搜尋歷史資料集" aria-label="搜尋歷史資料集">
       <div class="history-list" id="historyList">
         <p class="history-empty">尚無已儲存的資料集。</p>
       </div>
@@ -569,20 +667,26 @@
             <p>選取本機 CSV 後，工具會在瀏覽器內完成解析、品質檢查與統計計算，資料不會離開這台電腦。</p>
           </div>
         </div>
+        <div class="table-tools" id="tableTools" hidden>
+          <input class="search-input" id="columnSearch" type="search" placeholder="搜尋欄位名稱" aria-label="搜尋欄位名稱">
+          <select class="select-input" id="sortSelect" aria-label="排序分析結果">
+            <option value="original:asc">原始欄位順序</option>
+            <option value="name:asc">欄位名稱 A-Z</option>
+            <option value="type:asc">型態</option>
+            <option value="missingRate:desc">缺失率高到低</option>
+            <option value="uniqueCount:desc">唯一值多到少</option>
+          </select>
+          <div class="view-tabs" role="tablist" aria-label="分析欄位群組">
+            <button class="tab-button active" type="button" data-view="quality">品質</button>
+            <button class="tab-button" type="button" data-view="numeric">數值分布</button>
+            <button class="tab-button" type="button" data-view="string">字串分布</button>
+          </div>
+          <button class="tool-button" id="exportJson" type="button">匯出 JSON</button>
+          <button class="tool-button" id="exportCsv" type="button">匯出 CSV</button>
+        </div>
         <div class="table-wrap" id="tableWrap" hidden>
           <table>
-            <thead>
-              <tr>
-                <th>欄位名稱</th>
-                <th>型態</th>
-                <th>缺失值數</th>
-                <th>缺失率</th>
-                <th>最小值</th>
-                <th>最大值</th>
-                <th>平均值</th>
-                <th>標準差</th>
-              </tr>
-            </thead>
+            <thead id="resultHead"></thead>
             <tbody id="resultBody"></tbody>
           </table>
         </div>
@@ -617,27 +721,71 @@
       const STORE_NAME = "datasets";
       const NUMERIC_TYPE = "數值";
       const STRING_TYPE = "字串";
+      const VIEW_COLUMNS = {
+        quality: [
+          { key: "name", label: "欄位名稱" },
+          { key: "type", label: "型態" },
+          { key: "missingCount", label: "缺失值數" },
+          { key: "missingRate", label: "缺失率" },
+          { key: "uniqueCount", label: "唯一值數" }
+        ],
+        numeric: [
+          { key: "name", label: "欄位名稱" },
+          { key: "min", label: "最小值" },
+          { key: "p25", label: "P25" },
+          { key: "median", label: "中位數" },
+          { key: "p75", label: "P75" },
+          { key: "max", label: "最大值" },
+          { key: "mean", label: "平均值" },
+          { key: "stddev", label: "標準差" },
+          { key: "zeroCount", label: "零值數" },
+          { key: "negativeCount", label: "負值數" }
+        ],
+        string: [
+          { key: "name", label: "欄位名稱" },
+          { key: "type", label: "型態" },
+          { key: "uniqueCount", label: "唯一值數" },
+          { key: "topValues", label: "前 5 常見值" },
+          { key: "minLength", label: "最短長度" },
+          { key: "maxLength", label: "最長長度" }
+        ]
+      };
 
       const state = {
         db: null,
         datasets: [],
         activeDatasetId: null,
-        pendingDeleteId: null
+        pendingDeleteId: null,
+        activeDataset: null,
+        activeAnalysis: [],
+        activeView: "quality",
+        columnSearch: "",
+        historySearch: "",
+        sortKey: "original",
+        sortDirection: "asc"
       };
+      let big5EncodeMap = null;
 
       const els = {
         dbStatus: document.getElementById("dbStatus"),
         csvInput: document.getElementById("csvInput"),
         historyList: document.getElementById("historyList"),
         historyCount: document.getElementById("historyCount"),
+        historySearch: document.getElementById("historySearch"),
         summaryName: document.getElementById("summaryName"),
         summaryImportedAt: document.getElementById("summaryImportedAt"),
         summaryEncoding: document.getElementById("summaryEncoding"),
         summaryRows: document.getElementById("summaryRows"),
         summaryColumns: document.getElementById("summaryColumns"),
         emptyState: document.getElementById("emptyState"),
+        tableTools: document.getElementById("tableTools"),
         tableWrap: document.getElementById("tableWrap"),
+        resultHead: document.getElementById("resultHead"),
         resultBody: document.getElementById("resultBody"),
+        columnSearch: document.getElementById("columnSearch"),
+        sortSelect: document.getElementById("sortSelect"),
+        exportJson: document.getElementById("exportJson"),
+        exportCsv: document.getElementById("exportCsv"),
         loadingOverlay: document.getElementById("loadingOverlay"),
         loadingText: document.getElementById("loadingText"),
         deleteModal: document.getElementById("deleteModal"),
@@ -888,11 +1036,82 @@
         return Number.isFinite(number);
       }
 
+      function calculateQuantile(sortedValues, quantile) {
+        if (sortedValues.length === 0) {
+          return null;
+        }
+        if (sortedValues.length === 1) {
+          return sortedValues[0];
+        }
+
+        const position = (sortedValues.length - 1) * quantile;
+        const lower = Math.floor(position);
+        const upper = Math.ceil(position);
+        if (lower === upper) {
+          return sortedValues[lower];
+        }
+
+        const weight = position - lower;
+        return sortedValues[lower] + (sortedValues[upper] - sortedValues[lower]) * weight;
+      }
+
+      function buildTopValues(valueCounts) {
+        return Array.from(valueCounts.entries())
+          .map(([value, count]) => ({ value, count }))
+          .sort((a, b) => b.count - a.count)
+          .slice(0, 5);
+      }
+
+      function getBig5EncodeMap() {
+        if (big5EncodeMap) {
+          return big5EncodeMap;
+        }
+
+        const decoder = getTextDecoder("big5", false);
+        const map = new Map();
+        for (let lead = 0x81; lead <= 0xfe; lead += 1) {
+          for (let trail = 0x40; trail <= 0xfe; trail += 1) {
+            if (trail === 0x7f) {
+              continue;
+            }
+
+            const decoded = decoder.decode(Uint8Array.from([lead, trail]));
+            if (decoded.length === 1 && decoded.charCodeAt(0) !== 0xfffd && !map.has(decoded)) {
+              map.set(decoded, [lead, trail]);
+            }
+          }
+        }
+
+        big5EncodeMap = map;
+        return big5EncodeMap;
+      }
+
+      function encodeBig5Text(text) {
+        const map = getBig5EncodeMap();
+        const bytes = [];
+        for (const char of text) {
+          const code = char.charCodeAt(0);
+          if (code <= 0x7f) {
+            bytes.push(code);
+            continue;
+          }
+
+          const pair = map.get(char);
+          if (pair) {
+            bytes.push(pair[0], pair[1]);
+          } else {
+            bytes.push(0x3f);
+          }
+        }
+        return Uint8Array.from(bytes);
+      }
+
       function analyzeDataset(dataset) {
         const totalRows = dataset.rows.length;
         const results = [];
 
-        for (const header of dataset.headers) {
+        for (let headerIndex = 0; headerIndex < dataset.headers.length; headerIndex += 1) {
+          const header = dataset.headers[headerIndex];
           let missingCount = 0;
           let nonEmptyCount = 0;
           let numericCandidate = true;
@@ -900,6 +1119,12 @@
           let max = -Infinity;
           let sum = 0;
           let sumSquares = 0;
+          let zeroCount = 0;
+          let negativeCount = 0;
+          let minLength = Infinity;
+          let maxLength = 0;
+          const numericValues = [];
+          const valueCounts = new Map();
 
           for (let i = 0; i < totalRows; i += 1) {
             const value = dataset.rows[i][header];
@@ -909,43 +1134,183 @@
             }
 
             nonEmptyCount += 1;
-            if (!isValidNumber(value)) {
+            const text = String(value).trim();
+            const length = text.length;
+            if (length < minLength) minLength = length;
+            if (length > maxLength) maxLength = length;
+            valueCounts.set(text, (valueCounts.get(text) || 0) + 1);
+
+            if (!isValidNumber(text)) {
               numericCandidate = false;
               continue;
             }
 
             if (numericCandidate) {
-              const number = Number(String(value).trim());
+              const number = Number(text);
               if (number < min) min = number;
               if (number > max) max = number;
               sum += number;
               sumSquares += number * number;
+              numericValues.push(number);
+              if (number === 0) zeroCount += 1;
+              if (number < 0) negativeCount += 1;
             }
           }
 
           const type = nonEmptyCount > 0 && numericCandidate ? NUMERIC_TYPE : STRING_TYPE;
           let mean = null;
           let stddev = null;
+          let p25 = null;
+          let median = null;
+          let p75 = null;
 
           if (type === NUMERIC_TYPE) {
             mean = sum / nonEmptyCount;
             const variance = Math.max(0, sumSquares / nonEmptyCount - mean * mean);
             stddev = Math.sqrt(variance);
+            numericValues.sort((a, b) => a - b);
+            p25 = calculateQuantile(numericValues, 0.25);
+            median = calculateQuantile(numericValues, 0.5);
+            p75 = calculateQuantile(numericValues, 0.75);
           }
 
           results.push({
             name: header,
+            originalIndex: headerIndex,
             type,
             missingCount,
             missingRate: totalRows === 0 ? 0 : missingCount / totalRows,
             min: type === NUMERIC_TYPE ? min : null,
             max: type === NUMERIC_TYPE ? max : null,
             mean,
-            stddev
+            stddev,
+            p25,
+            median,
+            p75,
+            zeroCount: type === NUMERIC_TYPE ? zeroCount : null,
+            negativeCount: type === NUMERIC_TYPE ? negativeCount : null,
+            uniqueCount: valueCounts.size,
+            topValues: buildTopValues(valueCounts),
+            minLength: nonEmptyCount > 0 ? minLength : null,
+            maxLength: nonEmptyCount > 0 ? maxLength : null
           });
         }
 
         return results;
+      }
+
+      function filterAnalysisResults(results, keyword) {
+        const normalizedKeyword = String(keyword || "").trim().toLocaleLowerCase("zh-TW");
+        if (!normalizedKeyword) {
+          return results.slice();
+        }
+        return results.filter((result) => result.name.toLocaleLowerCase("zh-TW").includes(normalizedKeyword));
+      }
+
+      function sortAnalysisResults(results, sortKey, direction) {
+        const multiplier = direction === "desc" ? -1 : 1;
+        const key = sortKey || "original";
+        return results.slice().sort((a, b) => {
+          if (key === "original") {
+            return (a.originalIndex - b.originalIndex) * multiplier;
+          }
+
+          const aValue = a[key];
+          const bValue = b[key];
+          if (typeof aValue === "number" && typeof bValue === "number") {
+            return (aValue - bValue) * multiplier;
+          }
+
+          return String(aValue || "").localeCompare(String(bValue || ""), "zh-TW") * multiplier;
+        });
+      }
+
+      function formatTopValues(values) {
+        if (!values || values.length === 0) {
+          return "-";
+        }
+        return values.map((item) => `${item.value} (${item.count})`).join("、");
+      }
+
+      function buildAnalysisExport(dataset, analysis, format) {
+        const columns = analysis.map((result) => ({
+          name: result.name,
+          type: result.type,
+          missingCount: result.missingCount,
+          missingRate: result.missingRate,
+          uniqueCount: result.uniqueCount,
+          min: result.min,
+          p25: result.p25,
+          median: result.median,
+          p75: result.p75,
+          max: result.max,
+          mean: result.mean,
+          stddev: result.stddev,
+          zeroCount: result.zeroCount,
+          negativeCount: result.negativeCount,
+          minLength: result.minLength,
+          maxLength: result.maxLength,
+          topValues: result.topValues
+        }));
+        const report = {
+          dataset: {
+            fileName: dataset.fileName,
+            importedAt: dataset.importedAt,
+            encoding: dataset.encoding || "-"
+          },
+          rowCount: dataset.rowCount,
+          columnCount: dataset.columnCount,
+          exportedAt: new Date().toISOString(),
+          columns
+        };
+
+        if (format !== "csv") {
+          return report;
+        }
+
+        const headers = [
+          "欄位名稱",
+          "型態",
+          "缺失值數",
+          "缺失率",
+          "唯一值數",
+          "最小值",
+          "P25",
+          "中位數",
+          "P75",
+          "最大值",
+          "平均值",
+          "標準差",
+          "零值數",
+          "負值數",
+          "最短長度",
+          "最長長度",
+          "前 5 常見值"
+        ];
+        const escapeCsvValue = (value) => {
+          const text = value === null || value === undefined ? "" : String(value);
+          return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, "\"\"")}"` : text;
+        };
+        const lines = columns.map((column) => [
+          column.name,
+          column.type,
+          column.missingCount,
+          formatPercent(column.missingRate),
+          column.uniqueCount,
+          column.min,
+          column.p25,
+          column.median,
+          column.p75,
+          column.max,
+          column.mean,
+          column.stddev,
+          column.zeroCount,
+          column.negativeCount,
+          column.minLength,
+          column.maxLength,
+          formatTopValues(column.topValues)
+        ].map(escapeCsvValue).join(","));
+        return encodeBig5Text([headers.join(","), ...lines].join("\r\n"));
       }
 
       function formatDate(value) {
@@ -974,6 +1339,46 @@
         return `${(value * 100).toFixed(2)}%`;
       }
 
+      function formatCellValue(result, key) {
+        if (key === "name") return result.name;
+        if (key === "type") return result.type;
+        if (key === "missingCount") return result.missingCount.toLocaleString("zh-TW");
+        if (key === "missingRate") return formatPercent(result.missingRate);
+        if (key === "uniqueCount") return result.uniqueCount.toLocaleString("zh-TW");
+        if (key === "topValues") return formatTopValues(result.topValues);
+        if (key === "zeroCount" || key === "negativeCount") {
+          return result[key] === null ? "-" : result[key].toLocaleString("zh-TW");
+        }
+        if (key === "minLength" || key === "maxLength") {
+          return result[key] === null ? "-" : result[key].toLocaleString("zh-TW");
+        }
+        return formatNumber(result[key]);
+      }
+
+      function downloadTextFile(fileName, mimeType, text) {
+        const blob = new Blob([text], { type: mimeType });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+      }
+
+      function downloadBinaryFile(fileName, mimeType, bytes) {
+        const blob = new Blob([bytes], { type: mimeType });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+      }
+
       function showLoading(message) {
         els.loadingText.textContent = message;
         els.loadingOverlay.classList.add("visible");
@@ -999,20 +1404,29 @@
         els.summaryColumns.textContent = "0";
       }
 
+      function getVisibleDatasets() {
+        const keyword = state.historySearch.trim().toLocaleLowerCase("zh-TW");
+        if (!keyword) {
+          return state.datasets;
+        }
+        return state.datasets.filter((dataset) => dataset.fileName.toLocaleLowerCase("zh-TW").includes(keyword));
+      }
+
       function renderHistory() {
-        els.historyCount.textContent = String(state.datasets.length);
+        const visibleDatasets = getVisibleDatasets();
+        els.historyCount.textContent = String(visibleDatasets.length);
         els.historyList.textContent = "";
 
-        if (state.datasets.length === 0) {
+        if (state.datasets.length === 0 || visibleDatasets.length === 0) {
           const empty = document.createElement("p");
           empty.className = "history-empty";
-          empty.textContent = "尚無已儲存的資料集。";
+          empty.textContent = state.datasets.length === 0 ? "尚無已儲存的資料集。" : "沒有符合搜尋的資料集。";
           els.historyList.appendChild(empty);
           return;
         }
 
         const fragment = document.createDocumentFragment();
-        for (const dataset of state.datasets) {
+        for (const dataset of visibleDatasets) {
           const item = document.createElement("div");
           item.className = "history-item";
           if (dataset.id === state.activeDatasetId) {
@@ -1048,61 +1462,90 @@
         els.historyList.appendChild(fragment);
       }
 
+      function renderResultHeader(columns) {
+        els.resultHead.textContent = "";
+        const row = document.createElement("tr");
+        for (const column of columns) {
+          const th = document.createElement("th");
+          th.textContent = column.label;
+          row.appendChild(th);
+        }
+        els.resultHead.appendChild(row);
+      }
+
+      function renderAnalysisTable() {
+        const columns = VIEW_COLUMNS[state.activeView] || VIEW_COLUMNS.quality;
+        const filtered = filterAnalysisResults(state.activeAnalysis, state.columnSearch);
+        const sorted = sortAnalysisResults(filtered, state.sortKey, state.sortDirection);
+        renderResultHeader(columns);
+        els.resultBody.textContent = "";
+
+        if (sorted.length === 0) {
+          const row = document.createElement("tr");
+          const cell = document.createElement("td");
+          cell.className = "empty-row";
+          cell.colSpan = columns.length;
+          cell.textContent = "沒有符合搜尋條件的欄位。";
+          row.appendChild(cell);
+          els.resultBody.appendChild(row);
+          return;
+        }
+
+        const fragment = document.createDocumentFragment();
+        for (const result of sorted) {
+          const row = document.createElement("tr");
+          for (const column of columns) {
+            const cell = document.createElement("td");
+            if (column.key === "name") {
+              cell.className = "column-name";
+              cell.title = result.name;
+            }
+            if ((column.key === "missingCount" || column.key === "missingRate") && result.missingCount > 0) {
+              cell.className = "missing-alert";
+            }
+            if (column.key === "type") {
+              const typeBadge = document.createElement("span");
+              typeBadge.className = result.type === STRING_TYPE ? "type-badge string" : "type-badge";
+              typeBadge.textContent = result.type;
+              cell.appendChild(typeBadge);
+            } else {
+              cell.textContent = formatCellValue(result, column.key);
+            }
+            row.appendChild(cell);
+          }
+          fragment.appendChild(row);
+        }
+
+        els.resultBody.appendChild(fragment);
+      }
+
+      function renderViewTabs() {
+        const buttons = els.tableTools.querySelectorAll("[data-view]");
+        buttons.forEach((button) => {
+          button.classList.toggle("active", button.dataset.view === state.activeView);
+        });
+      }
+
       function renderDataset(dataset) {
         const analysis = analyzeDataset(dataset);
         state.activeDatasetId = dataset.id;
+        state.activeDataset = dataset;
+        state.activeAnalysis = analysis;
+        state.columnSearch = "";
+        state.sortKey = "original";
+        state.sortDirection = "asc";
+        els.columnSearch.value = "";
+        els.sortSelect.value = "original:asc";
 
         els.summaryName.textContent = dataset.fileName;
         els.summaryImportedAt.textContent = formatDate(dataset.importedAt);
         els.summaryEncoding.textContent = dataset.encoding || "-";
         els.summaryRows.textContent = dataset.rowCount.toLocaleString("zh-TW");
         els.summaryColumns.textContent = dataset.columnCount.toLocaleString("zh-TW");
-        els.resultBody.textContent = "";
-
-        const fragment = document.createDocumentFragment();
-        for (const result of analysis) {
-          const row = document.createElement("tr");
-
-          const name = document.createElement("td");
-          name.className = "column-name";
-          name.title = result.name;
-          name.textContent = result.name;
-
-          const type = document.createElement("td");
-          const typeBadge = document.createElement("span");
-          typeBadge.className = result.type === STRING_TYPE ? "type-badge string" : "type-badge";
-          typeBadge.textContent = result.type;
-          type.appendChild(typeBadge);
-
-          const missingCount = document.createElement("td");
-          missingCount.textContent = result.missingCount.toLocaleString("zh-TW");
-
-          const missingRate = document.createElement("td");
-          missingRate.textContent = formatPercent(result.missingRate);
-
-          if (result.missingCount > 0) {
-            missingCount.className = "missing-alert";
-            missingRate.className = "missing-alert";
-          }
-
-          const min = document.createElement("td");
-          min.textContent = formatNumber(result.min);
-
-          const max = document.createElement("td");
-          max.textContent = formatNumber(result.max);
-
-          const mean = document.createElement("td");
-          mean.textContent = formatNumber(result.mean);
-
-          const stddev = document.createElement("td");
-          stddev.textContent = formatNumber(result.stddev);
-
-          row.append(name, type, missingCount, missingRate, min, max, mean, stddev);
-          fragment.appendChild(row);
-        }
-
-        els.resultBody.appendChild(fragment);
+        renderViewTabs();
+        renderAnalysisTable();
         els.emptyState.hidden = true;
+        els.tableTools.hidden = false;
         els.tableWrap.hidden = false;
         renderHistory();
       }
@@ -1228,7 +1671,10 @@
             resetSummary();
             els.resultBody.textContent = "";
             els.emptyState.hidden = false;
+            els.tableTools.hidden = true;
             els.tableWrap.hidden = true;
+            state.activeDataset = null;
+            state.activeAnalysis = [];
           }
           await refreshHistory();
           els.dbStatus.textContent = "可用";
@@ -1239,9 +1685,66 @@
         }
       }
 
+      function handleColumnSearch() {
+        state.columnSearch = els.columnSearch.value;
+        renderAnalysisTable();
+      }
+
+      function handleHistorySearch() {
+        state.historySearch = els.historySearch.value;
+        renderHistory();
+      }
+
+      function handleSortChange() {
+        const [key, direction] = els.sortSelect.value.split(":");
+        state.sortKey = key || "original";
+        state.sortDirection = direction || "asc";
+        renderAnalysisTable();
+      }
+
+      function handleViewChange(event) {
+        const button = event.target.closest("[data-view]");
+        if (!button) {
+          return;
+        }
+        state.activeView = button.dataset.view;
+        renderViewTabs();
+        renderAnalysisTable();
+      }
+
+      function handleExport(format) {
+        if (!state.activeDataset) {
+          return;
+        }
+
+        try {
+          const baseName = state.activeDataset.fileName.replace(/\.[^.]+$/, "") || "analysis";
+          if (format === "csv") {
+            const csvBytes = buildAnalysisExport(state.activeDataset, state.activeAnalysis, "csv");
+            downloadBinaryFile(`${baseName}-analysis-big5.csv`, "text/csv;charset=big5", csvBytes);
+            return;
+          }
+
+          const report = buildAnalysisExport(state.activeDataset, state.activeAnalysis, "json");
+          downloadTextFile(
+            `${baseName}-analysis.json`,
+            "application/json;charset=utf-8",
+            JSON.stringify(report, null, 2)
+          );
+        } catch (error) {
+          showError(error.message || "匯出失敗。");
+        }
+      }
+
       async function init() {
         els.csvInput.addEventListener("change", handleFileSelected);
         els.historyList.addEventListener("click", handleHistoryClick);
+        els.historySearch.addEventListener("input", handleHistorySearch);
+        els.columnSearch.addEventListener("input", handleColumnSearch);
+        els.sortSelect.addEventListener("change", handleSortChange);
+        els.tableTools.addEventListener("click", handleViewChange);
+        els.exportJson.addEventListener("click", () => handleExport("json"));
+        els.exportCsv.addEventListener("click", () => handleExport("csv"));
         els.cancelDelete.addEventListener("click", closeDeleteModal);
         els.confirmDelete.addEventListener("click", confirmDelete);
         els.deleteModal.addEventListener("click", (event) => {
