@@ -14,7 +14,7 @@ function loadAppFunctions() {
 
   const appScript = match[1].replace(
     /\n\s*init\(\);\s*\n\s*\}\)\(\);\s*$/,
-    "\n      globalThis.__odaTest = { decodeCsvBuffer, parseCsv, analyzeDataset, filterAnalysisResults, sortAnalysisResults, buildAnalysisExport, getChartableColumns, buildHistogram, buildChartModel };\n    })();"
+    "\n      globalThis.__odaTest = { decodeCsvBuffer, parseCsv, analyzeDataset, filterAnalysisResults, sortAnalysisResults, buildAnalysisExport, getChartableColumns, buildHistogram, buildChartModel, parseDateTime, detectDateColumns, computeCorrelation, computeLinearFit, buildScatterModel, buildBoxModel, buildCrosstabModel, buildOverviewModel, buildTimeSeriesModel };\n    })();"
   );
 
   function element() {
@@ -85,7 +85,16 @@ const {
   buildAnalysisExport,
   getChartableColumns,
   buildHistogram,
-  buildChartModel
+  buildChartModel,
+  parseDateTime,
+  detectDateColumns,
+  computeCorrelation,
+  computeLinearFit,
+  buildScatterModel,
+  buildBoxModel,
+  buildCrosstabModel,
+  buildOverviewModel,
+  buildTimeSeriesModel
 } = loadAppFunctions();
 
 function plain(value) {
@@ -226,5 +235,115 @@ assert.deepStrictEqual(plain(topValuesChart), {
     { label: "財務", value: 1 }
   ]
 });
+
+const parsedDate = parseDateTime("2026-09-05");
+assert.strictEqual(typeof parsedDate, "number");
+assert.strictEqual(parseDateTime("2026-09-05T08:30:00").constructor.name, "Number");
+assert.strictEqual(parseDateTime("2026/9/5 08:30"), parseDateTime("2026-09-05T08:30"));
+assert.strictEqual(parseDateTime("2026年9月5日"), parseDateTime("2026-09-05"));
+assert.strictEqual(parseDateTime("abc"), null);
+assert.strictEqual(parseDateTime(""), null);
+assert.strictEqual(parseDateTime("13/05/2026"), null);
+
+const dateColumns = detectDateColumns({
+  headers: ["日期", "分類"],
+  rows: [
+    { "日期": "2026-01-01", "分類": "A" },
+    { "日期": "2026-01-02", "分類": "B" },
+    { "日期": "2026-01-03", "分類": "C" }
+  ]
+});
+assert.deepStrictEqual(plain(dateColumns), ["日期"]);
+
+assert.strictEqual(computeCorrelation([{ x: 1, y: 2 }, { x: 2, y: 4 }, { x: 3, y: 6 }]), 1);
+assert.strictEqual(computeCorrelation([{ x: 1, y: 1 }]), null);
+assert.deepStrictEqual(plain(computeLinearFit([{ x: 0, y: 1 }, { x: 1, y: 3 }, { x: 2, y: 5 }])), { slope: 2, intercept: 1 });
+
+const scatterModel = buildScatterModel(dataset, "金額", "金額", false);
+assert.strictEqual(scatterModel, null);
+const scatterOk = buildScatterModel({
+  headers: ["a", "b"],
+  rows: [
+    { a: "1", b: "2" },
+    { a: "2", b: "4" },
+    { a: "", b: "x" }
+  ]
+}, "a", "b", true);
+assert.strictEqual(scatterOk.n, 2);
+assert.strictEqual(scatterOk.excluded, 1);
+assert.strictEqual(scatterOk.correlation, 1);
+assert.deepStrictEqual(plain(scatterOk.trendline), { slope: 2, intercept: 0 });
+
+const boxModel = buildBoxModel([-10, 1, 2, 3, 4, 5, 6, 7, 8, 20]);
+assert.strictEqual(boxModel.q1, 2.25);
+assert.strictEqual(boxModel.median, 4.5);
+assert.strictEqual(boxModel.q3, 6.75);
+assert.strictEqual(boxModel.iqr, 4.5);
+assert.strictEqual(boxModel.lowerFence, -4.5);
+assert.strictEqual(boxModel.upperFence, 13.5);
+assert.deepStrictEqual(plain(boxModel.outliers), [
+  { value: -10, count: 1 },
+  { value: 20, count: 1 }
+]);
+assert.strictEqual(buildBoxModel([]), null);
+
+const crossModel = buildCrosstabModel({
+  headers: ["群組", "狀態", "金額"],
+  rows: [
+    { "群組": "A", "狀態": "開", "金額": "10" },
+    { "群組": "A", "狀態": "關", "金額": "20" },
+    { "群組": "B", "狀態": "開", "金額": "30" },
+    { "群組": "B", "狀態": "關", "金額": "" },
+    { "群組": "B", "狀態": "開", "金額": "50" }
+  ]
+}, "群組", "狀態", "count", null);
+assert.strictEqual(crossModel.includedRows, 5);
+assert.strictEqual(crossModel.excludedRows, 0);
+assert.strictEqual(crossModel.rows.length, 2);
+assert.strictEqual(crossModel.columns.length, 2);
+const crossSum = buildCrosstabModel({
+  headers: ["群組", "狀態", "金額"],
+  rows: [
+    { "群組": "A", "狀態": "開", "金額": "10" },
+    { "群組": "A", "狀態": "關", "金額": "20" },
+    { "群組": "B", "狀態": "開", "金額": "30" },
+    { "群組": "B", "狀態": "關", "金額": "" },
+    { "群組": "B", "狀態": "開", "金額": "50" }
+  ]
+}, "群組", "狀態", "sum", "金額");
+assert.strictEqual(crossSum.includedRows, 4);
+assert.strictEqual(crossSum.excludedRows, 1);
+const aRowSum = crossSum.rows.find((r) => r.label === "A");
+assert.strictEqual(aRowSum.rowTotal, 30);
+
+const overviewModel = buildOverviewModel(analysis);
+assert.strictEqual(overviewModel.totalColumns, 3);
+assert.strictEqual(overviewModel.typeSummary.length, 2);
+assert.strictEqual(overviewModel.missingRateItems.length, 3);
+assert.strictEqual(overviewModel.missingRateItems[0].label, "金額");
+
+const lineModel = buildTimeSeriesModel({
+  headers: ["日期", "數值"],
+  rows: [
+    { "日期": "2026-01-02", "數值": "10" },
+    { "日期": "2026-01-01", "數值": "20" },
+    { "日期": "2026-01-01", "數值": "30" },
+    { "日期": "", "數值": "99" }
+  ]
+}, "日期", "數值", "mean");
+assert.strictEqual(lineModel.points.length, 2);
+assert.strictEqual(lineModel.excluded, 1);
+assert.strictEqual(lineModel.points[0].value, 25);
+assert.strictEqual(lineModel.points[1].value, 10);
+assert.strictEqual(lineModel.aggregation, "mean");
+
+const lineSum = buildTimeSeriesModel({
+  headers: ["日期", "數值"],
+  rows: [
+    { "日期": "2026-01-01", "數值": "10" },
+    { "日期": "2026-01-01", "數值": "30" }
+  ]
+}, "日期", "數值", "sum");
+assert.strictEqual(lineSum.points[0].value, 40);
 
 console.log("encoding tests passed");

@@ -381,9 +381,30 @@
       line-height: 1.35;
     }
 
+    .chart-heading {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+    }
+
     .chart-controls {
       display: grid;
       grid-template-columns: minmax(180px, 1fr) minmax(150px, 220px);
+      gap: 10px;
+      align-items: end;
+    }
+
+    .chart-toolbar {
+      display: grid;
+      grid-template-columns: minmax(220px, 360px);
+      gap: 10px;
+      align-items: end;
+    }
+
+    .chart-fields {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       gap: 10px;
       align-items: end;
     }
@@ -656,7 +677,9 @@
         flex-direction: column;
       }
 
-      .chart-controls {
+      .chart-controls,
+      .chart-toolbar,
+      .chart-fields {
         grid-template-columns: 1fr;
       }
 
@@ -763,18 +786,35 @@
         </div>
         <section class="chart-panel" id="chartPanel" aria-label="欄位視覺化" hidden>
           <div class="chart-header">
-            <h2>欄位視覺化</h2>
+            <div class="chart-heading">
+              <h2>欄位視覺化</h2>
+              <div class="view-tabs" role="tablist" aria-label="切換圖表模式">
+                <button class="tab-button active" type="button" id="chartTabBasic">單欄圖表</button>
+                <button class="tab-button" type="button" id="chartTabAdvanced">進階圖表</button>
+              </div>
+            </div>
             <button class="tool-button" id="downloadChart" type="button">下載 PNG</button>
           </div>
-          <div class="chart-controls">
-            <label class="chart-field">
-              <span>欄位</span>
-              <select class="select-input" id="chartColumnSelect" aria-label="選擇圖表欄位"></select>
-            </label>
-            <label class="chart-field">
-              <span>圖表類型</span>
-              <select class="select-input" id="chartTypeSelect" aria-label="選擇圖表類型"></select>
-            </label>
+          <div id="basicChartControls">
+            <div class="chart-controls">
+              <label class="chart-field">
+                <span>欄位</span>
+                <select class="select-input" id="chartColumnSelect" aria-label="選擇圖表欄位"></select>
+              </label>
+              <label class="chart-field">
+                <span>圖表類型</span>
+                <select class="select-input" id="chartTypeSelect" aria-label="選擇圖表類型"></select>
+              </label>
+            </div>
+          </div>
+          <div id="advancedChartControls" hidden>
+            <div class="chart-toolbar">
+              <label class="chart-field">
+                <span>圖表種類</span>
+                <select class="select-input" id="advChartKind" aria-label="選擇進階圖表種類"></select>
+              </label>
+            </div>
+            <div class="chart-fields" id="advChartFields"></div>
           </div>
           <div class="chart-canvas-wrap">
             <canvas class="chart-canvas" id="chartCanvas" width="960" height="420"></canvas>
@@ -825,6 +865,15 @@
         histogram: "直方圖",
         topValues: "常見值"
       };
+      const ADV_CHART_KINDS = {
+        scatter: "散佈圖與相關性",
+        crosstab: "字串交叉頻率表",
+        boxplot: "箱型圖（異常值標註）",
+        overview: "資料品質總覽",
+        line: "時間序列折線圖"
+      };
+      const CROSSTAB_MAX_DIMENSION = 30;
+      const SCATTER_MAX_POINTS = 15000;
       const VIEW_COLUMNS = {
         quality: [
           { key: "name", label: "欄位名稱" },
@@ -868,7 +917,20 @@
         sortKey: "original",
         sortDirection: "asc",
         activeChartColumn: "",
-        activeChartType: "summary"
+        activeChartType: "summary",
+        activeChartTab: "basic",
+        advChartKind: "scatter",
+        scatterX: "",
+        scatterY: "",
+        scatterTrend: true,
+        crossRow: "",
+        crossCol: "",
+        crossMode: "count",
+        crossMetric: "",
+        boxColumn: "",
+        lineDate: "",
+        lineValue: "",
+        lineAggregation: "mean"
       };
       let big5EncodeMap = null;
 
@@ -891,6 +953,12 @@
         chartPanel: document.getElementById("chartPanel"),
         chartColumnSelect: document.getElementById("chartColumnSelect"),
         chartTypeSelect: document.getElementById("chartTypeSelect"),
+        chartTabBasic: document.getElementById("chartTabBasic"),
+        chartTabAdvanced: document.getElementById("chartTabAdvanced"),
+        basicChartControls: document.getElementById("basicChartControls"),
+        advancedChartControls: document.getElementById("advancedChartControls"),
+        advChartKind: document.getElementById("advChartKind"),
+        advChartFields: document.getElementById("advChartFields"),
         chartCanvas: document.getElementById("chartCanvas"),
         chartMessage: document.getElementById("chartMessage"),
         downloadChart: document.getElementById("downloadChart"),
@@ -1458,6 +1526,458 @@
         };
       }
 
+      function parseDateTime(value) {
+        if (value === null || value === undefined) {
+          return null;
+        }
+        const text = String(value).trim();
+        if (text === "") {
+          return null;
+        }
+
+        const match = text.match(
+          /^(\d{4})[-\/年](\d{1,2})[-\/月](\d{1,2})日?(?:[\sT](\d{1,2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?$/
+        );
+        if (!match) {
+          return null;
+        }
+
+        const year = Number(match[1]);
+        const month = Number(match[2]);
+        const day = Number(match[3]);
+        const hour = match[4] === undefined ? 0 : Number(match[4]);
+        const minute = match[5] === undefined ? 0 : Number(match[5]);
+        const second = match[6] === undefined ? 0 : Number(match[6]);
+        const timezone = match[7];
+
+        const utcMillis = Date.UTC(year, month - 1, day, hour, minute, second);
+        if (Number.isNaN(utcMillis)) {
+          return null;
+        }
+        const date = new Date(utcMillis);
+        if (
+          date.getUTCFullYear() !== year ||
+          date.getUTCMonth() !== month - 1 ||
+          date.getUTCDate() !== day
+        ) {
+          return null;
+        }
+
+        if (timezone === undefined) {
+          return utcMillis;
+        }
+        if (timezone === "Z") {
+          return utcMillis;
+        }
+        const sign = timezone[0] === "-" ? -1 : 1;
+        const tzMatch = timezone.slice(1).match(/^(\d{1,2}):?(\d{2})$/);
+        if (!tzMatch) {
+          return null;
+        }
+        const offsetMinutes = sign * (Number(tzMatch[1]) * 60 + Number(tzMatch[2]));
+        return utcMillis - offsetMinutes * 60000;
+      }
+
+      function detectDateColumns(dataset) {
+        if (!dataset || !dataset.rows) {
+          return [];
+        }
+        const results = [];
+        const totalRows = dataset.rows.length;
+        for (const header of dataset.headers) {
+          let nonEmpty = 0;
+          let parsed = 0;
+          const seen = new Set();
+          for (let i = 0; i < totalRows; i += 1) {
+            const text = String(dataset.rows[i][header] || "").trim();
+            if (text === "") {
+              continue;
+            }
+            nonEmpty += 1;
+            const epoch = parseDateTime(text);
+            if (epoch !== null) {
+              parsed += 1;
+              seen.add(epoch);
+            }
+          }
+          if (nonEmpty === 0) {
+            continue;
+          }
+          if (parsed / nonEmpty >= 0.9 && seen.size >= 2) {
+            results.push(header);
+          }
+        }
+        return results;
+      }
+
+      function computeCorrelation(pairs) {
+        const valid = pairs.filter((pair) => Number.isFinite(pair.x) && Number.isFinite(pair.y));
+        if (valid.length < 2) {
+          return null;
+        }
+        let sumX = 0;
+        let sumY = 0;
+        for (const pair of valid) {
+          sumX += pair.x;
+          sumY += pair.y;
+        }
+        const meanX = sumX / valid.length;
+        const meanY = sumY / valid.length;
+        let numerator = 0;
+        let denominatorX = 0;
+        let denominatorY = 0;
+        for (const pair of valid) {
+          const dx = pair.x - meanX;
+          const dy = pair.y - meanY;
+          numerator += dx * dy;
+          denominatorX += dx * dx;
+          denominatorY += dy * dy;
+        }
+        const denominator = Math.sqrt(denominatorX * denominatorY);
+        if (denominator === 0 || !Number.isFinite(denominator)) {
+          return null;
+        }
+        const correlation = numerator / denominator;
+        return Math.max(-1, Math.min(1, correlation));
+      }
+
+      function computeLinearFit(pairs) {
+        const valid = pairs.filter((pair) => Number.isFinite(pair.x) && Number.isFinite(pair.y));
+        if (valid.length < 2) {
+          return null;
+        }
+        let sumX = 0;
+        let sumY = 0;
+        for (const pair of valid) {
+          sumX += pair.x;
+          sumY += pair.y;
+        }
+        const meanX = sumX / valid.length;
+        const meanY = sumY / valid.length;
+        let numerator = 0;
+        let denominator = 0;
+        for (const pair of valid) {
+          const dx = pair.x - meanX;
+          numerator += dx * (pair.y - meanY);
+          denominator += dx * dx;
+        }
+        if (denominator === 0 || !Number.isFinite(numerator / denominator)) {
+          return null;
+        }
+        const slope = numerator / denominator;
+        const intercept = meanY - slope * meanX;
+        return { slope, intercept };
+      }
+
+      function buildScatterModel(dataset, xHeader, yHeader, includeTrendline) {
+        if (!dataset || !xHeader || !yHeader || xHeader === yHeader) {
+          return null;
+        }
+        const points = [];
+        let excluded = 0;
+        for (let i = 0; i < dataset.rows.length; i += 1) {
+          const xText = String(dataset.rows[i][xHeader] || "").trim();
+          const yText = String(dataset.rows[i][yHeader] || "").trim();
+          if (xText === "" || yText === "" || !isValidNumber(xText) || !isValidNumber(yText)) {
+            excluded += 1;
+            continue;
+          }
+          points.push({ x: Number(xText), y: Number(yText) });
+        }
+        const correlation = computeCorrelation(points);
+        const trendline = includeTrendline ? computeLinearFit(points) : null;
+        return {
+          type: "scatter",
+          xHeader,
+          yHeader,
+          n: points.length,
+          excluded,
+          correlation,
+          trendline,
+          points
+        };
+      }
+
+      function buildBoxModel(values) {
+        const numericValues = values.filter((value) => Number.isFinite(value));
+        if (numericValues.length === 0) {
+          return null;
+        }
+        const sorted = numericValues.slice().sort((a, b) => a - b);
+        const q1 = calculateQuantile(sorted, 0.25);
+        const median = calculateQuantile(sorted, 0.5);
+        const q3 = calculateQuantile(sorted, 0.75);
+        const iqr = q3 - q1;
+        const lowerFence = q1 - 1.5 * iqr;
+        const upperFence = q3 + 1.5 * iqr;
+
+        let whiskerLow = sorted[0];
+        let whiskerHigh = sorted[sorted.length - 1];
+        const outlierCounts = new Map();
+        for (const value of sorted) {
+          if (value < lowerFence) {
+            whiskerLow = value;
+            outlierCounts.set(value, (outlierCounts.get(value) || 0) + 1);
+          } else if (value > upperFence) {
+            whiskerHigh = value;
+            outlierCounts.set(value, (outlierCounts.get(value) || 0) + 1);
+          }
+        }
+        if (iqr === 0) {
+          whiskerLow = sorted[0];
+          whiskerHigh = sorted[sorted.length - 1];
+        }
+        const outliers = Array.from(outlierCounts.entries())
+          .map(([value, count]) => ({ value, count }))
+          .sort((a, b) => a.value - b.value);
+
+        return {
+          q1,
+          median,
+          q3,
+          iqr,
+          lowerFence,
+          upperFence,
+          whiskerLow,
+          whiskerHigh,
+          min: sorted[0],
+          max: sorted[sorted.length - 1],
+          n: sorted.length,
+          outliers
+        };
+      }
+
+      function buildCrosstabModel(dataset, rowHeader, colHeader, metricMode, metricHeader) {
+        if (!dataset || !rowHeader || !colHeader || rowHeader === colHeader) {
+          return null;
+        }
+        const useMetric = metricMode === "mean" || metricMode === "sum";
+        if (useMetric && (!metricHeader || metricHeader === rowHeader || metricHeader === colHeader)) {
+          return null;
+        }
+
+        const rowValues = [];
+        const colValues = [];
+        let includedRows = 0;
+        let excludedRows = 0;
+        const cellAccumulator = new Map();
+        const rowCounts = new Map();
+        const colCounts = new Map();
+
+        const getCellKey = (rowValue, colValue) => `${rowValue}\u0000${colValue}`;
+
+        for (let i = 0; i < dataset.rows.length; i += 1) {
+          const rowText = String(dataset.rows[i][rowHeader] || "").trim();
+          const colText = String(dataset.rows[i][colHeader] || "").trim();
+          if (rowText === "" || colText === "") {
+            excludedRows += 1;
+            continue;
+          }
+          let metric = null;
+          if (useMetric) {
+            const metricText = String(dataset.rows[i][metricHeader] || "").trim();
+            if (metricText === "" || !isValidNumber(metricText)) {
+              excludedRows += 1;
+              continue;
+            }
+            metric = Number(metricText);
+          }
+          includedRows += 1;
+
+          rowCounts.set(rowText, (rowCounts.get(rowText) || 0) + 1);
+          colCounts.set(colText, (colCounts.get(colText) || 0) + 1);
+          const key = getCellKey(rowText, colText);
+          if (!cellAccumulator.has(key)) {
+            cellAccumulator.set(key, { count: 0, sum: 0 });
+            rowValues.push(rowText);
+            colValues.push(colText);
+          }
+          const cell = cellAccumulator.get(key);
+          cell.count += 1;
+          if (metric !== null) {
+            cell.sum += metric;
+          }
+        }
+
+        const collapse = (values, counts, max) => {
+          const unique = Array.from(new Set(values));
+          const sorted = unique.sort((a, b) => counts.get(b) - counts.get(a));
+          if (sorted.length <= max) {
+            return sorted;
+          }
+          const kept = sorted.slice(0, max - 1);
+          kept.push("其他");
+          return kept;
+        };
+
+        const rows = collapse(rowValues, rowCounts, CROSSTAB_MAX_DIMENSION);
+        const columns = collapse(colValues, colCounts, CROSSTAB_MAX_DIMENSION);
+        const rowHasOther = rows.includes("其他");
+        const colHasOther = columns.includes("其他");
+        const remap = (value, list, hasOther) => (hasOther && !list.includes(value) ? "其他" : value);
+
+        const matrix = rows.map((rowLabel) => ({
+          label: rowLabel,
+          rowTotal: 0,
+          cells: columns.map((colLabel) => {
+            let count = 0;
+            let sum = 0;
+            for (const [key, cell] of cellAccumulator) {
+              const [r, c] = key.split("\u0000");
+              if (remap(r, rows, rowHasOther) === rowLabel && remap(c, columns, colHasOther) === colLabel) {
+                count += cell.count;
+                sum += cell.sum;
+              }
+            }
+            return { label: colLabel, count, sum, value: metricMode === "sum" ? sum : (metricMode === "mean" ? sum / count : count) };
+          })
+        }));
+
+        let maxCellValue = 0;
+        for (const row of matrix) {
+          row.rowTotal = row.cells.reduce((acc, cell) => acc + cell.value, 0);
+          for (const cell of row.cells) {
+            if (cell.value > maxCellValue) {
+              maxCellValue = cell.value;
+            }
+          }
+        }
+        const colTotals = columns.map((colLabel, colIndex) => {
+          let total = 0;
+          for (const row of matrix) {
+            total += row.cells[colIndex].value;
+          }
+          return { label: colLabel, total };
+        });
+
+        return {
+          type: "crosstab",
+          rowHeader,
+          colHeader,
+          metricMode,
+          metricHeader,
+          rows: matrix,
+          columns: colTotals,
+          maxCellValue,
+          includedRows,
+          excludedRows,
+          collapsed: rowHasOther || colHasOther
+        };
+      }
+
+      function buildOverviewModel(analysis) {
+        const missingRateItems = analysis
+          .map((item) => ({ label: item.name, rate: item.missingRate, missingCount: item.missingCount }))
+          .sort((a, b) => b.rate - a.rate);
+        const OVERVIEW_MAX_COLUMNS = 40;
+        let collapsed = false;
+        let overviewItems = missingRateItems;
+        if (missingRateItems.length > OVERVIEW_MAX_COLUMNS) {
+          collapsed = true;
+          const kept = missingRateItems.slice(0, OVERVIEW_MAX_COLUMNS - 1);
+          const rest = missingRateItems.slice(OVERVIEW_MAX_COLUMNS - 1);
+          const restTotalRows = rest.reduce((acc, item) => acc + item.missingCount, 0);
+          const restRate = rest.length > 0 ? rest.reduce((acc, item) => acc + item.rate, 0) / rest.length : 0;
+          kept.push({ label: `其他 ${rest.length} 欄`, rate: restRate, missingCount: restTotalRows, isOther: true });
+          overviewItems = kept;
+        }
+
+        const typeCounts = new Map();
+        for (const item of analysis) {
+          typeCounts.set(item.type, (typeCounts.get(item.type) || 0) + 1);
+        }
+        const typeSummary = Array.from(typeCounts.entries()).map(([label, count]) => ({ label, count }));
+
+        return {
+          type: "overview",
+          missingRateItems: overviewItems,
+          typeSummary,
+          totalColumns: analysis.length,
+          collapsed
+        };
+      }
+
+      function buildTimeSeriesModel(dataset, dateHeader, valueHeader, aggregation) {
+        if (!dataset || !dateHeader || !valueHeader || dateHeader === valueHeader) {
+          return null;
+        }
+        const groups = new Map();
+        let excluded = 0;
+        for (let i = 0; i < dataset.rows.length; i += 1) {
+          const epoch = parseDateTime(String(dataset.rows[i][dateHeader] || "").trim());
+          const valueText = String(dataset.rows[i][valueHeader] || "").trim();
+          if (epoch === null || valueText === "" || !isValidNumber(valueText)) {
+            excluded += 1;
+            continue;
+          }
+          if (!groups.has(epoch)) {
+            groups.set(epoch, { epoch, label: formatDateShort(new Date(epoch)), sum: 0, count: 0 });
+          }
+          const group = groups.get(epoch);
+          group.sum += Number(valueText);
+          group.count += 1;
+        }
+
+        const points = Array.from(groups.values())
+          .sort((a, b) => a.epoch - b.epoch)
+          .map((group) => ({
+            dateKey: group.epoch,
+            label: group.label,
+            value: aggregation === "sum" ? group.sum : (aggregation === "mean" ? group.sum / group.count : group.sum / group.count),
+            rowCount: group.count
+          }));
+
+        const minDate = points.length > 0 ? points[0].dateKey : null;
+        const maxDate = points.length > 0 ? points[points.length - 1].dateKey : null;
+
+        return {
+          type: "line",
+          dateHeader,
+          valueHeader,
+          aggregation: aggregation === "sum" ? "sum" : "mean",
+          points,
+          minDate,
+          maxDate,
+          excluded
+        };
+      }
+
+      function buildAdvancedChartModel() {
+        const dataset = state.activeDataset;
+        if (!dataset) {
+          return null;
+        }
+        const analysis = state.activeAnalysis;
+        const kind = state.advChartKind;
+
+        if (kind === "scatter") {
+          return buildScatterModel(dataset, state.scatterX, state.scatterY, state.scatterTrend);
+        }
+        if (kind === "crosstab") {
+          return buildCrosstabModel(dataset, state.crossRow, state.crossCol, state.crossMode, state.crossMetric);
+        }
+        if (kind === "boxplot") {
+          const item = analysis.find((col) => col.name === state.boxColumn);
+          if (!item) {
+            return null;
+          }
+          const model = buildBoxModel(getNumericColumnValues(dataset, state.boxColumn));
+          if (!model) {
+            return null;
+          }
+          model.type = "boxplot";
+          model.columnName = state.boxColumn;
+          return model;
+        }
+        if (kind === "overview") {
+          return buildOverviewModel(analysis);
+        }
+        if (kind === "line") {
+          return buildTimeSeriesModel(dataset, state.lineDate, state.lineValue, state.lineAggregation);
+        }
+        return null;
+      }
+
       function buildAnalysisExport(dataset, analysis, format) {
         const columns = analysis.map((result) => ({
           name: result.name,
@@ -1550,6 +2070,14 @@
           hour: "2-digit",
           minute: "2-digit"
         }).format(new Date(value));
+      }
+
+      function formatDateShort(value) {
+        return new Intl.DateTimeFormat("zh-TW", {
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit"
+        }).format(value);
       }
 
       function formatNumber(value) {
@@ -1808,22 +2336,209 @@
 
         els.chartColumnSelect.value = state.activeChartColumn;
         syncChartTypeOptions();
-        els.downloadChart.disabled = chartableColumns.length === 0;
+        populateAdvChartKind();
+        syncAdvancedFieldSelections();
+        renderAdvancedControls();
+      }
+
+      function getNumericColumnNames() {
+        return state.activeAnalysis
+          .filter((item) => item.type === NUMERIC_TYPE)
+          .map((item) => item.name);
+      }
+
+      function getStringColumnNames() {
+        return state.activeAnalysis
+          .filter((item) => item.type === STRING_TYPE)
+          .map((item) => item.name);
+      }
+
+      function createField(select, options, label, onChange) {
+        const field = document.createElement("label");
+        field.className = "chart-field";
+        const span = document.createElement("span");
+        span.textContent = label;
+        const selectElement = document.createElement("select");
+        selectElement.className = "select-input";
+        replaceSelectOptions(selectElement, options);
+        selectElement.addEventListener("change", onChange);
+        field.append(span, selectElement);
+        return { field, selectElement };
+      }
+
+      function syncAdvancedFieldSelections() {
+        const numericColumns = getNumericColumnNames();
+        const stringColumns = getStringColumnNames();
+        const dateColumns = detectDateColumns(state.activeDataset);
+        const resetIfMissing = (current, candidates) =>
+          candidates.includes(current) ? current : (candidates[0] || "");
+
+        state.scatterX = resetIfMissing(state.scatterX, numericColumns);
+        if (numericColumns.length > 1 && state.scatterY === state.scatterX) {
+          state.scatterY = numericColumns.find((name) => name !== state.scatterX) || "";
+        } else {
+          state.scatterY = resetIfMissing(state.scatterY, numericColumns);
+        }
+        if (numericColumns.length > 1 && state.scatterY === state.scatterX) {
+          state.scatterY = numericColumns.find((name) => name !== state.scatterX) || "";
+        }
+        state.crossRow = resetIfMissing(state.crossRow, stringColumns);
+        if (!stringColumns.includes(state.crossCol) || state.crossCol === state.crossRow) {
+          state.crossCol = stringColumns.find((name) => name !== state.crossRow) || state.crossRow;
+        }
+        state.crossMetric = resetIfMissing(state.crossMetric, numericColumns);
+        state.boxColumn = resetIfMissing(state.boxColumn, numericColumns);
+        state.lineDate = resetIfMissing(state.lineDate, dateColumns);
+        state.lineValue = resetIfMissing(state.lineValue, numericColumns);
+      }
+
+      function buildAdvancedFieldControls() {
+        els.advChartFields.textContent = "";
+        const kind = state.advChartKind;
+        const numericColumns = getNumericColumnNames();
+        const stringColumns = getStringColumnNames();
+        const dateColumns = detectDateColumns(state.activeDataset);
+
+        if (kind === "scatter") {
+          const xField = createField(els.advChartFields, numericColumns.map((name) => ({ value: name, label: name })), "X 欄位（數值）", () => {
+            state.scatterX = xField.selectElement.value;
+            if (state.scatterY === state.scatterX) {
+              state.scatterY = numericColumns.find((name) => name !== state.scatterX) || "";
+            }
+            renderAdvancedControls();
+          });
+          const yField = createField(els.advChartFields, numericColumns.map((name) => ({ value: name, label: name })), "Y 欄位（數值）", () => {
+            state.scatterY = yField.selectElement.value;
+            if (state.scatterX === state.scatterY) {
+              state.scatterX = numericColumns.find((name) => name !== state.scatterY) || "";
+            }
+            renderAdvancedControls();
+          });
+          xField.selectElement.value = state.scatterX;
+          yField.selectElement.value = state.scatterY;
+          const trendField = createField(els.advChartFields, [
+            { value: "true", label: "顯示趨勢線" },
+            { value: "false", label: "隱藏趨勢線" }
+          ], "趨勢線", () => {
+            state.scatterTrend = trendField.selectElement.value === "true";
+            renderChart();
+          });
+          trendField.selectElement.value = String(state.scatterTrend);
+          els.advChartFields.append(xField.field, yField.field, trendField.field);
+        } else if (kind === "crosstab") {
+          const rowField = createField(els.advChartFields, stringColumns.map((name) => ({ value: name, label: name })), "列欄位（字串）", () => {
+            state.crossRow = rowField.selectElement.value;
+            if (state.crossCol === state.crossRow) {
+              state.crossCol = stringColumns.find((name) => name !== state.crossRow) || "";
+            }
+            renderAdvancedControls();
+          });
+          const colField = createField(els.advChartFields, stringColumns.map((name) => ({ value: name, label: name })), "欄欄位（字串）", () => {
+            state.crossCol = colField.selectElement.value;
+            if (state.crossRow === state.crossCol) {
+              state.crossRow = stringColumns.find((name) => name !== state.crossCol) || "";
+            }
+            renderAdvancedControls();
+          });
+          rowField.selectElement.value = state.crossRow;
+          colField.selectElement.value = state.crossCol;
+          const modeField = createField(els.advChartFields, [
+            { value: "count", label: "筆數" },
+            { value: "mean", label: "平均值" },
+            { value: "sum", label: "總和" }
+          ], "統計值", () => {
+            state.crossMode = modeField.selectElement.value;
+            renderAdvancedControls();
+          });
+          modeField.selectElement.value = state.crossMode;
+          els.advChartFields.append(rowField.field, colField.field, modeField.field);
+          if (state.crossMode === "mean" || state.crossMode === "sum") {
+            const metricField = createField(els.advChartFields, numericColumns.map((name) => ({ value: name, label: name })), "數值欄位（計算用）", () => {
+              state.crossMetric = metricField.selectElement.value;
+              renderChart();
+            });
+            metricField.selectElement.value = state.crossMetric;
+            els.advChartFields.appendChild(metricField.field);
+          }
+        } else if (kind === "boxplot") {
+          const boxField = createField(els.advChartFields, numericColumns.map((name) => ({ value: name, label: name })), "數值欄位", () => {
+            state.boxColumn = boxField.selectElement.value;
+            renderChart();
+          });
+          boxField.selectElement.value = state.boxColumn;
+          els.advChartFields.appendChild(boxField.field);
+        } else if (kind === "overview") {
+          const note = document.createElement("p");
+          note.className = "chart-message";
+          note.textContent = "此圖表不需選擇欄位，直接以目前資料集所有欄位繪製。";
+          els.advChartFields.appendChild(note);
+        } else if (kind === "line") {
+          const dateField = createField(els.advChartFields, dateColumns.map((name) => ({ value: name, label: name })), "日期欄位", () => {
+            state.lineDate = dateField.selectElement.value;
+            renderChart();
+          });
+          const valueField = createField(els.advChartFields, numericColumns.map((name) => ({ value: name, label: name })), "數值欄位", () => {
+            state.lineValue = valueField.selectElement.value;
+            renderChart();
+          });
+          const aggField = createField(els.advChartFields, [
+            { value: "mean", label: "平均值" },
+            { value: "sum", label: "總和" }
+          ], "彙總方式", () => {
+            state.lineAggregation = aggField.selectElement.value;
+            renderChart();
+          });
+          dateField.selectElement.value = state.lineDate;
+          valueField.selectElement.value = state.lineValue;
+          aggField.selectElement.value = state.lineAggregation;
+          els.advChartFields.append(dateField.field, valueField.field, aggField.field);
+        }
+      }
+
+      function renderAdvancedControls() {
+        syncAdvancedFieldSelections();
+        buildAdvancedFieldControls();
         renderChart();
       }
 
-      function prepareChartCanvas() {
+      function populateAdvChartKind() {
+        replaceSelectOptions(els.advChartKind, Object.keys(ADV_CHART_KINDS).map((key) => ({
+          value: key,
+          label: ADV_CHART_KINDS[key]
+        })));
+        els.advChartKind.value = state.advChartKind;
+      }
+
+      function setChartTab(tab) {
+        state.activeChartTab = tab === "advanced" ? "advanced" : "basic";
+        els.chartTabBasic.classList.toggle("active", state.activeChartTab === "basic");
+        els.chartTabAdvanced.classList.toggle("active", state.activeChartTab === "advanced");
+        els.basicChartControls.hidden = state.activeChartTab !== "basic";
+        els.advancedChartControls.hidden = state.activeChartTab !== "advanced";
+        if (state.activeChartTab === "advanced") {
+          populateAdvChartKind();
+          syncAdvancedFieldSelections();
+          buildAdvancedFieldControls();
+        }
+        renderChart();
+      }
+
+      function prepareChartCanvas(requestedSize) {
         const canvas = els.chartCanvas;
         const context = canvas.getContext && canvas.getContext("2d");
         if (!context) {
           return null;
         }
         const rect = canvas.getBoundingClientRect ? canvas.getBoundingClientRect() : null;
-        const layoutWidth = Math.max(720, Math.round((rect && rect.width) || canvas.clientWidth || 960));
-        const layoutHeight = CHART_CANVAS_HEIGHT;
+        const containerWidth = Math.round((rect && rect.width) || canvas.clientWidth || 960);
+        const layoutWidth = requestedSize && requestedSize.width
+          ? Math.max(720, requestedSize.width)
+          : Math.max(720, containerWidth);
+        const layoutHeight = (requestedSize && requestedSize.height) || CHART_CANVAS_HEIGHT;
         const pixelRatio = Math.max(1, Math.min(window.devicePixelRatio || 1, 2));
         canvas.width = Math.round(layoutWidth * pixelRatio);
         canvas.height = Math.round(layoutHeight * pixelRatio);
+        canvas.style.width = `${layoutWidth}px`;
         canvas.style.height = `${layoutHeight}px`;
         context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
         context.clearRect(0, 0, layoutWidth, layoutHeight);
@@ -1954,6 +2669,19 @@
       }
 
       function renderChart() {
+        if (state.activeChartTab === "advanced") {
+          const advancedModel = buildAdvancedChartModel();
+          const requestedSize = getAdvancedChartSize(advancedModel);
+          const preparedAdvanced = prepareChartCanvas(requestedSize);
+          if (!preparedAdvanced) {
+            els.chartMessage.textContent = "此瀏覽器無法使用 Canvas 繪製圖表。";
+            els.downloadChart.disabled = true;
+            return;
+          }
+          renderAdvancedChart(preparedAdvanced.context, preparedAdvanced.width, preparedAdvanced.height);
+          return;
+        }
+
         const preparedCanvas = prepareChartCanvas();
         if (!preparedCanvas) {
           els.chartMessage.textContent = "此瀏覽器無法使用 Canvas 繪製圖表。";
@@ -1981,17 +2709,524 @@
         els.downloadChart.disabled = false;
       }
 
+      function getAdvancedChartSize(model) {
+        const kind = state.advChartKind;
+        if (kind === "crosstab" && model) {
+          const colCount = Math.max(model.columns.length, 1);
+          const rowCount = Math.max(model.rows.length, 1);
+          return { width: 180 + colCount * 110 + 130, height: 120 + rowCount * 34 + 40 };
+        }
+        if (kind === "overview" && model) {
+          const rows = Math.max(model.missingRateItems.length, 1);
+          return { width: 980, height: 110 + rows * 30 + 40 };
+        }
+        return null;
+      }
+
+      function formatCorrelation(value) {
+        if (value === null || !Number.isFinite(value)) {
+          return "-";
+        }
+        return value.toFixed(4);
+      }
+
+      function renderAdvancedChart(context, width, height) {
+        const model = buildAdvancedChartModel();
+        const kind = state.advChartKind;
+
+        const showEmpty = (message) => {
+          els.chartMessage.textContent = message;
+          els.downloadChart.disabled = true;
+        };
+
+        if (kind === "scatter" && getNumericColumnNames().length < 2) {
+          showEmpty("散佈圖至少需要 2 個數值欄位。");
+          return;
+        }
+        if (kind === "crosstab" && getStringColumnNames().length < 2) {
+          showEmpty("交叉頻率表至少需要 2 個字串欄位。");
+          return;
+        }
+        if (kind === "line" && detectDateColumns(state.activeDataset).length === 0) {
+          showEmpty("未偵測到日期欄位，無法繪製時間序列圖。");
+          return;
+        }
+        if (kind === "line" && getNumericColumnNames().length === 0) {
+          showEmpty("時間序列圖至少需要 1 個數值欄位。");
+          return;
+        }
+        if (kind === "boxplot" && getNumericColumnNames().length === 0) {
+          showEmpty("箱型圖至少需要 1 個數值欄位。");
+          return;
+        }
+
+        if (!model || (kind !== "overview" && model.points && model.points.length === 0) ||
+            (kind === "overview" && model.missingRateItems.length === 0)) {
+          showEmpty("這個圖表沒有可視覺化的有效資料。");
+          return;
+        }
+
+        if (kind === "scatter") {
+          drawScatterChart(context, model, width, height);
+          const trendText = model.trendline
+            ? `，趨勢線 y=${formatNumber(model.trendline.slope)}x${model.trendline.intercept >= 0 ? "+" : ""}${formatNumber(model.trendline.intercept)}`
+            : "";
+          els.chartMessage.textContent =
+            `${model.xHeader} × ${model.yHeader}，共 ${model.n} 點，相關係數 r=${formatCorrelation(model.correlation)}${trendText}，排除 ${model.excluded} 列。`;
+          els.downloadChart.disabled = false;
+          return;
+        }
+
+        if (kind === "crosstab") {
+          drawCrosstabChart(context, model, width, height);
+          const modeText = model.metricMode === "sum" ? "總和" : (model.metricMode === "mean" ? "平均" : "筆數");
+          const collapsedText = model.collapsed ? "（維度過大已彙整至「其他」）" : "";
+          els.chartMessage.textContent =
+            `${model.rowHeader} × ${model.colHeader}，單位：${modeText}${collapsedText}，納入 ${model.includedRows} 列，排除 ${model.excludedRows} 列。`;
+          els.downloadChart.disabled = false;
+          return;
+        }
+
+        if (kind === "boxplot") {
+          drawBoxplotChart(context, model, width, height);
+          const outlierText = model.outliers.length > 0
+            ? `，離群值 ${model.outliers.length} 種（${model.outliers.map((o) => `${formatNumber(o.value)}×${o.count}`).join("、")}）`
+            : "，無離群值";
+          els.chartMessage.textContent =
+            `${model.columnName} 箱型圖，IQR=${formatNumber(model.iqr)}，圍籬 [${formatNumber(model.lowerFence)}, ${formatNumber(model.upperFence)}]${outlierText}。`;
+          els.downloadChart.disabled = false;
+          return;
+        }
+
+        if (kind === "overview") {
+          drawOverviewChart(context, model, width, height);
+          const collapsedText = model.collapsed ? `（超過 ${model.totalColumns} 欄，其餘已彙整）` : "";
+          els.chartMessage.textContent = `資料品質總覽，共 ${model.totalColumns} 欄${collapsedText}。`;
+          els.downloadChart.disabled = false;
+          return;
+        }
+
+        if (kind === "line") {
+          drawLineChart(context, model, width, height);
+          const aggText = model.aggregation === "sum" ? "總和" : "平均";
+          els.chartMessage.textContent =
+            `${model.dateHeader} → ${model.valueHeader}，${aggText}彙總，${model.points.length} 個時間點，排除 ${model.excluded} 列。`;
+          els.downloadChart.disabled = false;
+        }
+      }
+
+      function drawScatterChart(context, model, width, height) {
+        const chartLeft = 92;
+        const chartRight = width - 40;
+        const chartTop = 78;
+        const chartBottom = height - 56;
+        const chartWidth = chartRight - chartLeft;
+        const chartHeight = chartBottom - chartTop;
+
+        const minX = Math.min(...model.points.map((p) => p.x));
+        const maxX = Math.max(...model.points.map((p) => p.x));
+        const minY = Math.min(...model.points.map((p) => p.y));
+        const maxY = Math.max(...model.points.map((p) => p.y));
+        const padX = (maxX - minX) * 0.05 || 1;
+        const padY = (maxY - minY) * 0.05 || 1;
+        const sx = (v) => chartLeft + ((v - (minX - padX)) / (maxX - minX + padX * 2)) * chartWidth;
+        const sy = (v) => chartBottom - ((v - (minY - padY)) / (maxY - minY + padY * 2)) * chartHeight;
+
+        context.strokeStyle = "#d9dee7";
+        context.lineWidth = 1;
+        context.beginPath();
+        context.moveTo(chartLeft, chartTop);
+        context.lineTo(chartLeft, chartBottom);
+        context.lineTo(chartRight, chartBottom);
+        context.stroke();
+
+        context.fillStyle = "#146c94";
+        const points = model.points;
+        const step = points.length > SCATTER_MAX_POINTS ? Math.ceil(points.length / SCATTER_MAX_POINTS) : 1;
+        for (let i = 0; i < points.length; i += step) {
+          const p = points[i];
+          context.beginPath();
+          context.arc(sx(p.x), sy(p.y), 2.5, 0, Math.PI * 2);
+          context.fill();
+        }
+
+        if (model.trendline) {
+          const x1 = minX - padX;
+          const x2 = maxX + padX;
+          const y1 = model.trendline.intercept + model.trendline.slope * x1;
+          const y2 = model.trendline.intercept + model.trendline.slope * x2;
+          context.strokeStyle = "#b42318";
+          context.lineWidth = 2;
+          context.beginPath();
+          context.moveTo(sx(x1), sy(y1));
+          context.lineTo(sx(x2), sy(y2));
+          context.stroke();
+        }
+
+        context.fillStyle = "#17202a";
+        context.font = "700 20px Microsoft JhengHei, sans-serif";
+        context.textAlign = "left";
+        context.textBaseline = "alphabetic";
+        context.fillText(fitCanvasText(context, `${model.yHeader} vs ${model.xHeader}`, width - 80), chartLeft, 44);
+
+        context.fillStyle = "#627083";
+        context.font = "13px Microsoft JhengHei, sans-serif";
+        context.textAlign = "center";
+        context.textBaseline = "top";
+        context.fillText(model.xHeader, chartLeft + chartWidth / 2, chartBottom + 16);
+        context.save();
+        context.translate(20, chartTop + chartHeight / 2);
+        context.rotate(-Math.PI / 2);
+        context.fillText(model.yHeader, 0, 0);
+        context.restore();
+      }
+
+      function drawCrosstabChart(context, model, width, height) {
+        const headerHeight = 44;
+        const rowLabelWidth = 110;
+        const chartLeft = rowLabelWidth + 12;
+        const chartTop = headerHeight + 12;
+        const colTotalHeight = 30;
+        const rowTotalWidth = 80;
+        const chartRight = width - 60 - rowTotalWidth;
+        const chartBottom = height - 64 - colTotalHeight;
+        const rows = model.rows.length;
+        const cols = model.columns.length;
+        const cellW = (chartRight - chartLeft) / Math.max(cols, 1);
+        const cellH = (chartBottom - chartTop) / Math.max(rows, 1);
+        const hasNegatives = model.rows.some((r) => r.cells.some((c) => c.value < 0));
+
+        for (let r = 0; r < rows; r += 1) {
+          for (let c = 0; c < cols; c += 1) {
+            const cell = model.rows[r].cells[c];
+            const x = chartLeft + c * cellW;
+            const y = chartTop + r * cellH;
+            let intensity = model.maxCellValue === 0 ? 0 : Math.min(1, Math.abs(cell.value) / model.maxCellValue);
+            if (cell.value < 0) {
+              context.fillStyle = `rgba(180, 35, 24, ${0.08 + intensity * 0.4})`;
+            } else {
+              context.fillStyle = `rgba(20, 108, 148, ${0.06 + intensity * 0.45})`;
+            }
+            context.fillRect(x, y, cellW, cellH);
+            context.strokeStyle = "#e5e9ef";
+            context.lineWidth = 1;
+            context.strokeRect(x, y, cellW, cellH);
+            context.fillStyle = "#17202a";
+            context.font = "11px Microsoft JhengHei, sans-serif";
+            context.textAlign = "center";
+            context.textBaseline = "middle";
+            context.fillText(fitCanvasText(context, formatNumber(cell.value), cellW - 6), x + cellW / 2, y + cellH / 2);
+          }
+        }
+
+        context.font = "12px Microsoft JhengHei, sans-serif";
+        context.textAlign = "right";
+        context.textBaseline = "alphabetic";
+        context.fillStyle = "#627083";
+        for (let c = 0; c < cols; c += 1) {
+          context.fillText(fitCanvasText(context, model.columns[c].label, cellW - 4), chartLeft + (c + 1) * cellW - 4, headerHeight);
+        }
+        context.textAlign = "right";
+        for (let r = 0; r < rows; r += 1) {
+          context.fillText(fitCanvasText(context, model.rows[r].label, rowLabelWidth), chartLeft - 6, chartTop + r * cellH + cellH / 2 + 4);
+        }
+        context.fillStyle = "#17202a";
+        context.font = "12px Microsoft JhengHei, sans-serif";
+        context.textAlign = "left";
+        const totalWidth = chartRight - chartLeft;
+        context.fillText("列小計", chartLeft + totalWidth, chartTop + rows * cellH + 12);
+        context.textAlign = "left";
+        for (let r = 0; r < rows; r += 1) {
+          context.fillText(formatNumber(model.rows[r].rowTotal), chartLeft + totalWidth + 8, chartTop + r * cellH + cellH / 2 + 4);
+        }
+
+        context.fillStyle = "#17202a";
+        context.font = "700 20px Microsoft JhengHei, sans-serif";
+        context.textAlign = "left";
+        context.textBaseline = "alphabetic";
+        context.fillText(fitCanvasText(context, `${model.rowHeader} × ${model.colHeader} 交叉頻率表`, width - 60), chartLeft, 26);
+        context.font = "12px Microsoft JhengHei, sans-serif";
+        context.fillStyle = "#627083";
+        context.textAlign = "right";
+        context.fillText("單位：" + (model.metricMode === "sum" ? "總和" : (model.metricMode === "mean" ? "平均" : "筆數")), width - 40, 26);
+
+        const legendY = chartBottom + colTotalHeight + 18;
+        context.font = "11px Microsoft JhengHei, sans-serif";
+        context.textAlign = "left";
+        context.fillStyle = "#627083";
+        context.fillText(hasNegatives ? "顏色深淺代表數值強度（紅色為負值）" : "顏色深淺代表數值強度", chartLeft, legendY);
+      }
+
+      function drawBoxplotChart(context, model, width, height) {
+        const chartTop = 78;
+        const chartBottom = height - 96;
+        const chartLeft = 70;
+        const chartRight = width - 40;
+        const chartWidth = chartRight - chartLeft;
+        const chartHeight = chartBottom - chartTop;
+
+        const minV = model.min;
+        const maxV = model.max;
+        const range = maxV - minV || 1;
+        const pad = range * 0.06;
+        const low = minV - pad;
+        const high = maxV + pad;
+        const sx = (v) => chartLeft + ((v - low) / (high - low)) * chartWidth;
+        const axisY = chartTop + chartHeight / 2;
+
+        context.strokeStyle = "#d9dee7";
+        context.lineWidth = 1;
+        context.beginPath();
+        context.moveTo(chartLeft, chartTop);
+        context.lineTo(chartLeft, chartBottom);
+        context.lineTo(chartRight, chartBottom);
+        context.stroke();
+
+        const boxX = sx(model.q1);
+        const boxW = sx(model.q3) - sx(model.q1);
+        context.fillStyle = "#d7ecf5";
+        context.strokeStyle = "#146c94";
+        context.lineWidth = 2;
+        context.fillRect(boxX, axisY - 32, boxW, 64);
+        context.strokeRect(boxX, axisY - 32, boxW, 64);
+
+        context.strokeStyle = "#146c94";
+        context.lineWidth = 3;
+        context.beginPath();
+        context.moveTo(sx(model.median), axisY - 40);
+        context.lineTo(sx(model.median), axisY + 40);
+        context.stroke();
+
+        context.strokeStyle = "#146c94";
+        context.lineWidth = 2;
+        context.beginPath();
+        context.moveTo(sx(model.whiskerLow), axisY);
+        context.lineTo(sx(model.q1), axisY);
+        context.moveTo(sx(model.q3), axisY);
+        context.lineTo(sx(model.whiskerHigh), axisY);
+        context.moveTo(sx(model.whiskerLow), axisY - 12);
+        context.lineTo(sx(model.whiskerLow), axisY + 12);
+        context.moveTo(sx(model.whiskerHigh), axisY - 12);
+        context.lineTo(sx(model.whiskerHigh), axisY + 12);
+        context.stroke();
+
+        context.fillStyle = "#b42318";
+        for (const outlier of model.outliers) {
+          context.beginPath();
+          context.arc(sx(outlier.value), axisY, 5, 0, Math.PI * 2);
+          context.fill();
+        }
+
+        context.fillStyle = "#17202a";
+        context.font = "700 20px Microsoft JhengHei, sans-serif";
+        context.textAlign = "left";
+        context.textBaseline = "alphabetic";
+        context.fillText(fitCanvasText(context, `${model.columnName} 箱型圖`, width - 80), chartLeft, 44);
+
+        context.fillStyle = "#627083";
+        context.font = "12px Microsoft JhengHei, sans-serif";
+        context.textAlign = "center";
+        context.textBaseline = "top";
+        const labels = [
+          { v: model.q1, t: `Q1 ${formatNumber(model.q1)}` },
+          { v: model.median, t: `中位數 ${formatNumber(model.median)}` },
+          { v: model.q3, t: `Q3 ${formatNumber(model.q3)}` }
+        ];
+        for (const label of labels) {
+          const x = sx(label.v);
+          context.fillText(label.t, Math.max(chartLeft, Math.min(chartRight, x)), chartBottom + 12);
+        }
+
+        context.font = "11px Microsoft JhengHei, sans-serif";
+        context.fillStyle = "#627083";
+        context.textAlign = "left";
+        context.fillText(`離群值 ${model.outliers.length} 個`, chartLeft, chartBottom + 36);
+      }
+
+      function drawOverviewChart(context, model, width, height) {
+        const leftWidth = Math.max(320, width * 0.55);
+        const rightLeft = leftWidth + 40;
+        const chartTop = 64;
+        const chartBottom = height - 56;
+
+        const items = model.missingRateItems;
+        const barAreaLeft = 120;
+        const barAreaRight = leftWidth - 20;
+        const barAreaTop = chartTop;
+        const barAreaBottom = chartBottom;
+        const rowH = Math.max(10, (barAreaBottom - barAreaTop) / Math.max(items.length, 1));
+        const barMax = Math.max(...items.map((i) => i.rate), 0);
+
+        context.strokeStyle = "#d9dee7";
+        context.lineWidth = 1;
+        context.beginPath();
+        context.moveTo(barAreaLeft, barAreaTop);
+        context.lineTo(barAreaLeft, barAreaBottom);
+        context.lineTo(barAreaRight, barAreaBottom);
+        context.stroke();
+
+        for (let i = 0; i < items.length; i += 1) {
+          const item = items[i];
+          const y = barAreaTop + i * rowH + rowH / 2;
+          const barWidth = (item.rate / (barMax || 1)) * (barAreaRight - barAreaLeft);
+          context.fillStyle = item.rate > 0 ? "#b42318" : "#9aa5b1";
+          context.fillRect(barAreaLeft, y - Math.max(3, rowH * 0.4), barWidth, Math.max(6, rowH * 0.8));
+          context.font = "10px Microsoft JhengHei, sans-serif";
+          context.textAlign = "right";
+          context.textBaseline = "middle";
+          context.fillStyle = "#17202a";
+          context.fillText(fitCanvasText(context, item.label, barAreaLeft - 6), barAreaLeft - 6, y);
+          context.fillStyle = "#627083";
+          context.textAlign = "left";
+          context.fillText(formatPercent(item.rate), barAreaLeft + barWidth + 4, y);
+        }
+
+        context.fillStyle = "#17202a";
+        context.font = "700 18px Microsoft JhengHei, sans-serif";
+        context.textAlign = "left";
+        context.textBaseline = "alphabetic";
+        context.fillText("各欄位缺失率", barAreaLeft, 40);
+
+        const donutRadius = Math.min(110, (width - rightLeft) / 2 - 40);
+        const centerX = rightLeft + (width - rightLeft) / 2;
+        const centerY = (chartTop + chartBottom) / 2 - 20;
+        const total = model.typeSummary.reduce((acc, t) => acc + t.count, 0);
+        const colors = ["#146c94", "#d9dee7"];
+        let startAngle = -Math.PI / 2;
+        model.typeSummary.forEach((type, index) => {
+          const sliceAngle = (type.count / (total || 1)) * Math.PI * 2;
+          context.fillStyle = colors[index % colors.length];
+          context.beginPath();
+          context.moveTo(centerX, centerY);
+          context.arc(centerX, centerY, donutRadius, startAngle, startAngle + sliceAngle);
+          context.closePath();
+          context.fill();
+          startAngle += sliceAngle;
+        });
+        context.fillStyle = "#ffffff";
+        context.beginPath();
+        context.arc(centerX, centerY, donutRadius * 0.6, 0, Math.PI * 2);
+        context.fill();
+
+        context.fillStyle = "#17202a";
+        context.font = "700 18px Microsoft JhengHei, sans-serif";
+        context.textAlign = "center";
+        context.textBaseline = "alphabetic";
+        context.fillText("型別分佈", centerX, 44);
+        let legendY = chartTop;
+        context.font = "12px Microsoft JhengHei, sans-serif";
+        context.textAlign = "left";
+        for (let i = 0; i < model.typeSummary.length; i += 1) {
+          const type = model.typeSummary[i];
+          context.fillStyle = colors[i % colors.length];
+          context.fillRect(centerX - donutRadius - 60, legendY, 12, 12);
+          context.fillStyle = "#17202a";
+          context.fillText(`${type.label}：${type.count}`, centerX - donutRadius - 40, legendY + 12);
+          legendY += 26;
+        }
+      }
+
+      function drawLineChart(context, model, width, height) {
+        const chartLeft = 92;
+        const chartRight = width - 40;
+        const chartTop = 78;
+        const chartBottom = height - 64;
+        const chartWidth = chartRight - chartLeft;
+        const chartHeight = chartBottom - chartTop;
+
+        if (model.points.length === 0) {
+          return;
+        }
+        const values = model.points.map((p) => p.value);
+        const minV = Math.min(...values);
+        const maxV = Math.max(...values);
+        const rangeV = maxV - minV || 1;
+        const padY = rangeV * 0.08;
+        const low = minV - padY;
+        const high = maxV + padY;
+        const minT = model.points[0].dateKey;
+        const maxT = model.points[model.points.length - 1].dateKey;
+        const timeRange = maxT - minT || 1;
+        const sx = (t) => chartLeft + ((t - minT) / timeRange) * chartWidth;
+        const sy = (v) => chartBottom - ((v - low) / (high - low)) * chartHeight;
+
+        context.strokeStyle = "#d9dee7";
+        context.lineWidth = 1;
+        context.beginPath();
+        context.moveTo(chartLeft, chartTop);
+        context.lineTo(chartLeft, chartBottom);
+        context.lineTo(chartRight, chartBottom);
+        context.stroke();
+
+        context.strokeStyle = "#146c94";
+        context.lineWidth = 2;
+        context.beginPath();
+        for (let i = 0; i < model.points.length; i += 1) {
+          const x = sx(model.points[i].dateKey);
+          const y = sy(model.points[i].value);
+          if (i === 0) {
+            context.moveTo(x, y);
+          } else {
+            context.lineTo(x, y);
+          }
+        }
+        context.stroke();
+
+        context.fillStyle = "#146c94";
+        for (let i = 0; i < model.points.length; i += 1) {
+          context.beginPath();
+          context.arc(sx(model.points[i].dateKey), sy(model.points[i].value), 3, 0, Math.PI * 2);
+          context.fill();
+        }
+
+        context.fillStyle = "#627083";
+        context.font = "11px Microsoft JhengHei, sans-serif";
+        context.textAlign = "center";
+        context.textBaseline = "top";
+        const labelStep = Math.max(1, Math.ceil(model.points.length / 8));
+        for (let i = 0; i < model.points.length; i += labelStep) {
+          const x = sx(model.points[i].dateKey);
+          context.fillText(fitCanvasText(context, model.points[i].label, 70), Math.max(chartLeft, Math.min(chartRight, x)), chartBottom + 8);
+        }
+
+        context.fillStyle = "#17202a";
+        context.font = "700 20px Microsoft JhengHei, sans-serif";
+        context.textAlign = "left";
+        context.textBaseline = "alphabetic";
+        context.fillText(fitCanvasText(context, `${model.dateHeader} → ${model.valueHeader} 時間序列`, width - 80), chartLeft, 44);
+        context.fillStyle = "#627083";
+        context.font = "12px Microsoft JhengHei, sans-serif";
+        context.textAlign = "right";
+        context.fillText(`單位：${model.aggregation === "sum" ? "總和" : "平均"}`, width - 40, 44);
+      }
+
       function sanitizeFilePart(value) {
         return String(value || "chart").replace(/[\\/:*?"<>|]+/g, "-").trim() || "chart";
       }
 
       function downloadChartPng() {
-        if (!state.activeDataset || !state.activeChartColumn || !els.chartCanvas.toBlob) {
+        if (!state.activeDataset || !els.chartCanvas.toBlob) {
           return;
         }
 
         const baseName = sanitizeFilePart(state.activeDataset.fileName.replace(/\.[^.]+$/, "") || "analysis");
-        const columnName = sanitizeFilePart(state.activeChartColumn);
+        let columnName;
+        if (state.activeChartTab === "advanced") {
+          const kind = state.advChartKind;
+          if (kind === "scatter") {
+            columnName = `scatter-${sanitizeFilePart(state.scatterX)}-${sanitizeFilePart(state.scatterY)}`;
+          } else if (kind === "crosstab") {
+            columnName = `crosstab-${sanitizeFilePart(state.crossRow)}-${sanitizeFilePart(state.crossCol)}`;
+          } else if (kind === "boxplot") {
+            columnName = `boxplot-${sanitizeFilePart(state.boxColumn)}`;
+          } else if (kind === "overview") {
+            columnName = "overview";
+          } else {
+            columnName = `line-${sanitizeFilePart(state.lineDate)}-${sanitizeFilePart(state.lineValue)}`;
+          }
+        } else {
+          columnName = sanitizeFilePart(state.activeChartColumn);
+        }
         els.chartCanvas.toBlob((blob) => {
           if (!blob) {
             showError("圖表圖片產生失敗。");
@@ -2011,6 +3246,19 @@
         state.sortDirection = "asc";
         state.activeChartColumn = "";
         state.activeChartType = "summary";
+        state.activeChartTab = "basic";
+        state.advChartKind = "scatter";
+        state.scatterX = "";
+        state.scatterY = "";
+        state.scatterTrend = true;
+        state.crossRow = "";
+        state.crossCol = "";
+        state.crossMode = "count";
+        state.crossMetric = "";
+        state.boxColumn = "";
+        state.lineDate = "";
+        state.lineValue = "";
+        state.lineAggregation = "mean";
         els.columnSearch.value = "";
         els.sortSelect.value = "original:asc";
 
@@ -2019,6 +3267,10 @@
         els.summaryEncoding.textContent = dataset.encoding || "-";
         els.summaryRows.textContent = dataset.rowCount.toLocaleString("zh-TW");
         els.summaryColumns.textContent = dataset.columnCount.toLocaleString("zh-TW");
+        els.chartTabBasic.classList.add("active");
+        els.chartTabAdvanced.classList.remove("active");
+        els.basicChartControls.hidden = false;
+        els.advancedChartControls.hidden = true;
         renderViewTabs();
         renderAnalysisTable();
         renderChartControls();
@@ -2198,6 +3450,13 @@
         renderChart();
       }
 
+      function handleAdvChartKindChange() {
+        state.advChartKind = els.advChartKind.value;
+        syncAdvancedFieldSelections();
+        buildAdvancedFieldControls();
+        renderChart();
+      }
+
       function handleViewChange(event) {
         const button = event.target.closest("[data-view]");
         if (!button) {
@@ -2240,6 +3499,9 @@
         els.sortSelect.addEventListener("change", handleSortChange);
         els.chartColumnSelect.addEventListener("change", handleChartColumnChange);
         els.chartTypeSelect.addEventListener("change", handleChartTypeChange);
+        els.chartTabBasic.addEventListener("click", () => setChartTab("basic"));
+        els.chartTabAdvanced.addEventListener("click", () => setChartTab("advanced"));
+        els.advChartKind.addEventListener("change", handleAdvChartKindChange);
         els.downloadChart.addEventListener("click", downloadChartPng);
         els.tableTools.addEventListener("click", handleViewChange);
         els.exportJson.addEventListener("click", () => handleExport("json"));
