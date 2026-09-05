@@ -26,6 +26,10 @@
       box-sizing: border-box;
     }
 
+    [hidden] {
+      display: none !important;
+    }
+
     body {
       margin: 0;
       min-height: 100vh;
@@ -356,6 +360,70 @@
       overflow: auto;
     }
 
+    .chart-panel {
+      display: grid;
+      gap: 14px;
+      padding: 16px;
+      border-bottom: 1px solid var(--line);
+      background: #ffffff;
+    }
+
+    .chart-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .chart-header h2 {
+      margin: 0;
+      font-size: 1.04rem;
+      line-height: 1.35;
+    }
+
+    .chart-controls {
+      display: grid;
+      grid-template-columns: minmax(180px, 1fr) minmax(150px, 220px);
+      gap: 10px;
+      align-items: end;
+    }
+
+    .chart-field {
+      display: grid;
+      gap: 6px;
+    }
+
+    .chart-field span {
+      color: var(--muted);
+      font-size: 0.78rem;
+      font-weight: 700;
+    }
+
+    .chart-canvas-wrap {
+      width: 100%;
+      overflow: auto;
+      padding: 10px;
+      background: #fbfcfe;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    .chart-canvas {
+      display: block;
+      width: 100%;
+      min-width: 680px;
+      height: auto;
+      background: #ffffff;
+      border-radius: 6px;
+    }
+
+    .chart-message {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.9rem;
+      line-height: 1.6;
+    }
+
     table {
       width: 100%;
       min-width: 900px;
@@ -583,6 +651,15 @@
         grid-template-columns: 1fr;
       }
 
+      .chart-header {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .chart-controls {
+        grid-template-columns: 1fr;
+      }
+
       .view-tabs {
         width: 100%;
         overflow-x: auto;
@@ -684,6 +761,26 @@
           <button class="tool-button" id="exportJson" type="button">匯出 JSON</button>
           <button class="tool-button" id="exportCsv" type="button">匯出 CSV</button>
         </div>
+        <section class="chart-panel" id="chartPanel" aria-label="欄位視覺化" hidden>
+          <div class="chart-header">
+            <h2>欄位視覺化</h2>
+            <button class="tool-button" id="downloadChart" type="button">下載 PNG</button>
+          </div>
+          <div class="chart-controls">
+            <label class="chart-field">
+              <span>欄位</span>
+              <select class="select-input" id="chartColumnSelect" aria-label="選擇圖表欄位"></select>
+            </label>
+            <label class="chart-field">
+              <span>圖表類型</span>
+              <select class="select-input" id="chartTypeSelect" aria-label="選擇圖表類型"></select>
+            </label>
+          </div>
+          <div class="chart-canvas-wrap">
+            <canvas class="chart-canvas" id="chartCanvas" width="960" height="420"></canvas>
+          </div>
+          <p class="chart-message" id="chartMessage">選擇欄位後會顯示對應圖表。</p>
+        </section>
         <div class="table-wrap" id="tableWrap" hidden>
           <table>
             <thead id="resultHead"></thead>
@@ -721,6 +818,13 @@
       const STORE_NAME = "datasets";
       const NUMERIC_TYPE = "數值";
       const STRING_TYPE = "字串";
+      const HISTOGRAM_BIN_COUNT = 10;
+      const CHART_CANVAS_HEIGHT = 420;
+      const CHART_TYPES = {
+        summary: "五數摘要",
+        histogram: "直方圖",
+        topValues: "常見值"
+      };
       const VIEW_COLUMNS = {
         quality: [
           { key: "name", label: "欄位名稱" },
@@ -762,7 +866,9 @@
         columnSearch: "",
         historySearch: "",
         sortKey: "original",
-        sortDirection: "asc"
+        sortDirection: "asc",
+        activeChartColumn: "",
+        activeChartType: "summary"
       };
       let big5EncodeMap = null;
 
@@ -782,6 +888,12 @@
         tableWrap: document.getElementById("tableWrap"),
         resultHead: document.getElementById("resultHead"),
         resultBody: document.getElementById("resultBody"),
+        chartPanel: document.getElementById("chartPanel"),
+        chartColumnSelect: document.getElementById("chartColumnSelect"),
+        chartTypeSelect: document.getElementById("chartTypeSelect"),
+        chartCanvas: document.getElementById("chartCanvas"),
+        chartMessage: document.getElementById("chartMessage"),
+        downloadChart: document.getElementById("downloadChart"),
         columnSearch: document.getElementById("columnSearch"),
         sortSelect: document.getElementById("sortSelect"),
         exportJson: document.getElementById("exportJson"),
@@ -1232,6 +1344,120 @@
         return values.map((item) => `${item.value} (${item.count})`).join("、");
       }
 
+      function getChartableColumns(analysis) {
+        return analysis
+          .filter((result) => result.type === NUMERIC_TYPE || (result.topValues && result.topValues.length > 0))
+          .map((result) => ({
+            name: result.name,
+            type: result.type,
+            defaultChartType: result.type === NUMERIC_TYPE ? "summary" : "topValues"
+          }));
+      }
+
+      function getNumericColumnValues(dataset, columnName) {
+        if (!dataset || !columnName) {
+          return [];
+        }
+        return dataset.rows
+          .map((row) => String(row[columnName] || "").trim())
+          .filter((value) => value !== "" && isValidNumber(value))
+          .map((value) => Number(value));
+      }
+
+      function formatChartNumber(value) {
+        if (!Number.isFinite(value)) {
+          return "-";
+        }
+        return value.toLocaleString("zh-TW", {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
+        });
+      }
+
+      function buildHistogram(values, requestedBinCount) {
+        const numericValues = values.filter((value) => Number.isFinite(value));
+        if (numericValues.length === 0) {
+          return { min: null, max: null, binCount: 0, bins: [] };
+        }
+
+        const min = Math.min(...numericValues);
+        const max = Math.max(...numericValues);
+        if (min === max) {
+          const label = formatChartNumber(min);
+          return {
+            min,
+            max,
+            binCount: 1,
+            bins: [{ label, labelLines: [label], start: min, end: max, count: numericValues.length }]
+          };
+        }
+
+        const binCount = Math.max(1, Math.floor(requestedBinCount || HISTOGRAM_BIN_COUNT));
+        const binWidth = (max - min) / binCount;
+        const bins = Array.from({ length: binCount }, (_, index) => {
+          const start = min + binWidth * index;
+          const end = index === binCount - 1 ? max : min + binWidth * (index + 1);
+          const startLabel = formatChartNumber(start);
+          const endLabel = formatChartNumber(end);
+          return {
+            label: `${startLabel} - ${endLabel}`,
+            labelLines: [startLabel, endLabel],
+            start,
+            end,
+            count: 0
+          };
+        });
+
+        for (const value of numericValues) {
+          const index = Math.min(Math.floor((value - min) / binWidth), binCount - 1);
+          bins[index].count += 1;
+        }
+
+        return { min, max, binCount, bins };
+      }
+
+      function buildChartModel(dataset, analysisItem, chartType) {
+        if (!dataset || !analysisItem) {
+          return null;
+        }
+
+        if (analysisItem.type === NUMERIC_TYPE && chartType === "histogram") {
+          const histogram = buildHistogram(getNumericColumnValues(dataset, analysisItem.name), HISTOGRAM_BIN_COUNT);
+          return {
+            title: `${analysisItem.name} 直方圖`,
+            type: "histogram",
+            unitLabel: "筆數",
+            items: histogram.bins.map((bin) => ({
+              label: bin.label,
+              labelLines: bin.labelLines,
+              value: bin.count
+            }))
+          };
+        }
+
+        if (analysisItem.type === NUMERIC_TYPE) {
+          return {
+            title: `${analysisItem.name} 五數摘要`,
+            type: "summary",
+            unitLabel: "數值",
+            items: [
+              { label: "最小值", value: analysisItem.min },
+              { label: "P25", value: analysisItem.p25 },
+              { label: "中位數", value: analysisItem.median },
+              { label: "P75", value: analysisItem.p75 },
+              { label: "最大值", value: analysisItem.max }
+            ]
+          };
+        }
+
+        return {
+          title: `${analysisItem.name} 常見值`,
+          type: "topValues",
+          unitLabel: "筆數",
+          items: (analysisItem.topValues || []).map((item) => ({ label: item.value, value: item.count }))
+        };
+      }
+
       function buildAnalysisExport(dataset, analysis, format) {
         const columns = analysis.map((result) => ({
           name: result.name,
@@ -1369,6 +1595,10 @@
 
       function downloadBinaryFile(fileName, mimeType, bytes) {
         const blob = new Blob([bytes], { type: mimeType });
+        downloadBlobFile(fileName, blob);
+      }
+
+      function downloadBlobFile(fileName, blob) {
         const url = URL.createObjectURL(blob);
         const link = document.createElement("a");
         link.href = url;
@@ -1526,6 +1756,251 @@
         });
       }
 
+      function getSelectedAnalysisItem() {
+        return state.activeAnalysis.find((item) => item.name === state.activeChartColumn) || null;
+      }
+
+      function getAllowedChartTypes(analysisItem) {
+        if (!analysisItem) {
+          return [];
+        }
+        if (analysisItem.type === NUMERIC_TYPE) {
+          return ["summary", "histogram"];
+        }
+        return ["topValues"];
+      }
+
+      function replaceSelectOptions(select, options) {
+        select.textContent = "";
+        for (const option of options) {
+          const element = document.createElement("option");
+          element.value = option.value;
+          element.textContent = option.label;
+          select.appendChild(element);
+        }
+      }
+
+      function syncChartTypeOptions() {
+        const analysisItem = getSelectedAnalysisItem();
+        const allowedTypes = getAllowedChartTypes(analysisItem);
+        replaceSelectOptions(els.chartTypeSelect, allowedTypes.map((type) => ({
+          value: type,
+          label: CHART_TYPES[type]
+        })));
+
+        if (!allowedTypes.includes(state.activeChartType)) {
+          state.activeChartType = allowedTypes[0] || "summary";
+        }
+        els.chartTypeSelect.value = state.activeChartType;
+      }
+
+      function renderChartControls() {
+        const chartableColumns = getChartableColumns(state.activeAnalysis);
+        replaceSelectOptions(els.chartColumnSelect, chartableColumns.map((column) => ({
+          value: column.name,
+          label: `${column.name}（${column.type}）`
+        })));
+
+        if (!chartableColumns.some((column) => column.name === state.activeChartColumn)) {
+          state.activeChartColumn = chartableColumns[0] ? chartableColumns[0].name : "";
+          state.activeChartType = chartableColumns[0] ? chartableColumns[0].defaultChartType : "summary";
+        }
+
+        els.chartColumnSelect.value = state.activeChartColumn;
+        syncChartTypeOptions();
+        els.downloadChart.disabled = chartableColumns.length === 0;
+        renderChart();
+      }
+
+      function prepareChartCanvas() {
+        const canvas = els.chartCanvas;
+        const context = canvas.getContext && canvas.getContext("2d");
+        if (!context) {
+          return null;
+        }
+        const rect = canvas.getBoundingClientRect ? canvas.getBoundingClientRect() : null;
+        const layoutWidth = Math.max(720, Math.round((rect && rect.width) || canvas.clientWidth || 960));
+        const layoutHeight = CHART_CANVAS_HEIGHT;
+        const pixelRatio = Math.max(1, Math.min(window.devicePixelRatio || 1, 2));
+        canvas.width = Math.round(layoutWidth * pixelRatio);
+        canvas.height = Math.round(layoutHeight * pixelRatio);
+        canvas.style.height = `${layoutHeight}px`;
+        context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+        context.clearRect(0, 0, layoutWidth, layoutHeight);
+        context.fillStyle = "#ffffff";
+        context.fillRect(0, 0, layoutWidth, layoutHeight);
+        return { context, width: layoutWidth, height: layoutHeight };
+      }
+
+      function drawChartTitle(context, model, width) {
+        const titleLeft = 56;
+        context.fillStyle = "#17202a";
+        context.font = "700 22px Microsoft JhengHei, sans-serif";
+        context.textAlign = "left";
+        context.textBaseline = "alphabetic";
+        context.fillText(fitCanvasText(context, model.title, width - 260), titleLeft, 42);
+        context.fillStyle = "#627083";
+        context.font = "14px Microsoft JhengHei, sans-serif";
+        context.textAlign = "right";
+        context.fillText(`單位：${model.unitLabel}`, width - 56, 42);
+      }
+
+      function fitCanvasText(context, text, maxWidth) {
+        const value = String(text);
+        if (context.measureText(value).width <= maxWidth) {
+          return value;
+        }
+
+        let output = value;
+        while (output.length > 1 && context.measureText(`${output}...`).width > maxWidth) {
+          output = output.slice(0, -1);
+        }
+        return `${output}...`;
+      }
+
+      function drawBarChart(context, model, width, height) {
+        const chartLeft = 96;
+        const chartTop = 78;
+        const chartWidth = width - 168;
+        const chartHeight = height - 166;
+        const maxValue = Math.max(...model.items.map((item) => item.value), 1);
+        const gap = 12;
+        const barWidth = Math.max(18, (chartWidth - gap * (model.items.length - 1)) / Math.max(model.items.length, 1));
+
+        context.strokeStyle = "#d9dee7";
+        context.lineWidth = 1;
+        context.beginPath();
+        context.moveTo(chartLeft, chartTop);
+        context.lineTo(chartLeft, chartTop + chartHeight);
+        context.lineTo(chartLeft + chartWidth, chartTop + chartHeight);
+        context.stroke();
+
+        context.font = "13px Microsoft JhengHei, sans-serif";
+        context.textAlign = "center";
+        context.textBaseline = "top";
+
+        model.items.forEach((item, index) => {
+          const x = chartLeft + index * (barWidth + gap);
+          const barHeight = item.value === 0 ? 0 : Math.max(2, (item.value / maxValue) * chartHeight);
+          const y = chartTop + chartHeight - barHeight;
+
+          context.fillStyle = model.type === "histogram" ? "#146c94" : "#176b50";
+          context.fillRect(x, y, barWidth, barHeight);
+          context.fillStyle = "#17202a";
+          context.fillText(formatNumber(item.value), x + barWidth / 2, Math.max(chartTop, y - 22));
+          context.fillStyle = "#627083";
+          const labelLines = item.labelLines || [item.label];
+          if (labelLines.length > 1) {
+            context.fillText(fitCanvasText(context, labelLines[0], barWidth + gap), x + barWidth / 2, chartTop + chartHeight + 12);
+            context.fillText(fitCanvasText(context, labelLines[1], barWidth + gap), x + barWidth / 2, chartTop + chartHeight + 31);
+          } else {
+            context.fillText(fitCanvasText(context, labelLines[0], barWidth + gap), x + barWidth / 2, chartTop + chartHeight + 18);
+          }
+        });
+      }
+
+      function drawSummaryChart(context, model, width, height) {
+        const values = model.items.map((item) => item.value).filter((value) => Number.isFinite(value));
+        if (values.length === 0) {
+          return;
+        }
+
+        const min = Math.min(...values);
+        const max = Math.max(...values);
+        const range = max - min || 1;
+        const axisLeft = 92;
+        const axisRight = width - 80;
+        const axisY = Math.round(height / 2);
+        const scale = (value) => axisLeft + ((value - min) / range) * (axisRight - axisLeft);
+        const byLabel = new Map(model.items.map((item) => [item.label, item.value]));
+        const minX = scale(byLabel.get("最小值"));
+        const p25X = scale(byLabel.get("P25"));
+        const medianX = scale(byLabel.get("中位數"));
+        const p75X = scale(byLabel.get("P75"));
+        const maxX = scale(byLabel.get("最大值"));
+
+        context.strokeStyle = "#146c94";
+        context.lineWidth = 4;
+        context.beginPath();
+        context.moveTo(minX, axisY);
+        context.lineTo(maxX, axisY);
+        context.stroke();
+
+        context.fillStyle = "#d7ecf5";
+        context.strokeStyle = "#146c94";
+        context.lineWidth = 2;
+        context.fillRect(Math.min(p25X, p75X), axisY - 44, Math.abs(p75X - p25X), 88);
+        context.strokeRect(Math.min(p25X, p75X), axisY - 44, Math.abs(p75X - p25X), 88);
+
+        context.strokeStyle = "#b42318";
+        context.lineWidth = 3;
+        context.beginPath();
+        context.moveTo(medianX, axisY - 52);
+        context.lineTo(medianX, axisY + 52);
+        context.stroke();
+
+        context.fillStyle = "#17202a";
+        context.font = "13px Microsoft JhengHei, sans-serif";
+        context.textAlign = "center";
+        context.textBaseline = "top";
+        model.items.forEach((item, index) => {
+          const x = scale(item.value);
+          const y = index % 2 === 0 ? axisY + 68 : axisY - 94;
+          context.fillText(item.label, x, y);
+          context.fillStyle = "#627083";
+          context.fillText(formatNumber(item.value), x, y + 20);
+          context.fillStyle = "#17202a";
+        });
+      }
+
+      function renderChart() {
+        const preparedCanvas = prepareChartCanvas();
+        if (!preparedCanvas) {
+          els.chartMessage.textContent = "此瀏覽器無法使用 Canvas 繪製圖表。";
+          els.downloadChart.disabled = true;
+          return;
+        }
+
+        const { context, width, height } = preparedCanvas;
+        const analysisItem = getSelectedAnalysisItem();
+        const model = buildChartModel(state.activeDataset, analysisItem, state.activeChartType);
+        if (!model || model.items.length === 0) {
+          els.chartMessage.textContent = "這個欄位沒有可視覺化的有效資料。";
+          els.downloadChart.disabled = true;
+          return;
+        }
+
+        drawChartTitle(context, model, width);
+        if (model.type === "summary") {
+          drawSummaryChart(context, model, width, height);
+        } else {
+          drawBarChart(context, model, width, height);
+        }
+
+        els.chartMessage.textContent = `${model.title}，共 ${model.items.length} 個資料點。`;
+        els.downloadChart.disabled = false;
+      }
+
+      function sanitizeFilePart(value) {
+        return String(value || "chart").replace(/[\\/:*?"<>|]+/g, "-").trim() || "chart";
+      }
+
+      function downloadChartPng() {
+        if (!state.activeDataset || !state.activeChartColumn || !els.chartCanvas.toBlob) {
+          return;
+        }
+
+        const baseName = sanitizeFilePart(state.activeDataset.fileName.replace(/\.[^.]+$/, "") || "analysis");
+        const columnName = sanitizeFilePart(state.activeChartColumn);
+        els.chartCanvas.toBlob((blob) => {
+          if (!blob) {
+            showError("圖表圖片產生失敗。");
+            return;
+          }
+          downloadBlobFile(`${baseName}-${columnName}-chart.png`, blob);
+        }, "image/png");
+      }
+
       function renderDataset(dataset) {
         const analysis = analyzeDataset(dataset);
         state.activeDatasetId = dataset.id;
@@ -1534,6 +2009,8 @@
         state.columnSearch = "";
         state.sortKey = "original";
         state.sortDirection = "asc";
+        state.activeChartColumn = "";
+        state.activeChartType = "summary";
         els.columnSearch.value = "";
         els.sortSelect.value = "original:asc";
 
@@ -1544,8 +2021,10 @@
         els.summaryColumns.textContent = dataset.columnCount.toLocaleString("zh-TW");
         renderViewTabs();
         renderAnalysisTable();
+        renderChartControls();
         els.emptyState.hidden = true;
         els.tableTools.hidden = false;
+        els.chartPanel.hidden = false;
         els.tableWrap.hidden = false;
         renderHistory();
       }
@@ -1672,9 +2151,12 @@
             els.resultBody.textContent = "";
             els.emptyState.hidden = false;
             els.tableTools.hidden = true;
+            els.chartPanel.hidden = true;
             els.tableWrap.hidden = true;
             state.activeDataset = null;
             state.activeAnalysis = [];
+            state.activeChartColumn = "";
+            state.activeChartType = "summary";
           }
           await refreshHistory();
           els.dbStatus.textContent = "可用";
@@ -1700,6 +2182,20 @@
         state.sortKey = key || "original";
         state.sortDirection = direction || "asc";
         renderAnalysisTable();
+      }
+
+      function handleChartColumnChange() {
+        state.activeChartColumn = els.chartColumnSelect.value;
+        const analysisItem = getSelectedAnalysisItem();
+        const allowedTypes = getAllowedChartTypes(analysisItem);
+        state.activeChartType = allowedTypes[0] || "summary";
+        syncChartTypeOptions();
+        renderChart();
+      }
+
+      function handleChartTypeChange() {
+        state.activeChartType = els.chartTypeSelect.value;
+        renderChart();
       }
 
       function handleViewChange(event) {
@@ -1742,6 +2238,9 @@
         els.historySearch.addEventListener("input", handleHistorySearch);
         els.columnSearch.addEventListener("input", handleColumnSearch);
         els.sortSelect.addEventListener("change", handleSortChange);
+        els.chartColumnSelect.addEventListener("change", handleChartColumnChange);
+        els.chartTypeSelect.addEventListener("change", handleChartTypeChange);
+        els.downloadChart.addEventListener("click", downloadChartPng);
         els.tableTools.addEventListener("click", handleViewChange);
         els.exportJson.addEventListener("click", () => handleExport("json"));
         els.exportCsv.addEventListener("click", () => handleExport("csv"));

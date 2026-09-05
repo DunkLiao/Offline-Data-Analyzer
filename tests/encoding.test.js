@@ -2,8 +2,11 @@ const fs = require("fs");
 const vm = require("vm");
 const assert = require("assert");
 
+const htmlSource = fs.readFileSync("index.html", "utf8");
+assert.ok(/\[hidden\]\s*\{[^}]*display:\s*none\s*!important/i.test(htmlSource), "hidden elements should not be overridden by component display styles");
+
 function loadAppFunctions() {
-  const html = fs.readFileSync("index.html", "utf8");
+  const html = htmlSource;
   const match = html.match(/<script>([\s\S]*?)<\/script>/);
   if (!match) {
     throw new Error("missing script block");
@@ -11,7 +14,7 @@ function loadAppFunctions() {
 
   const appScript = match[1].replace(
     /\n\s*init\(\);\s*\n\s*\}\)\(\);\s*$/,
-    "\n      globalThis.__odaTest = { decodeCsvBuffer, parseCsv, analyzeDataset, filterAnalysisResults, sortAnalysisResults, buildAnalysisExport };\n    })();"
+    "\n      globalThis.__odaTest = { decodeCsvBuffer, parseCsv, analyzeDataset, filterAnalysisResults, sortAnalysisResults, buildAnalysisExport, getChartableColumns, buildHistogram, buildChartModel };\n    })();"
   );
 
   function element() {
@@ -79,7 +82,10 @@ const {
   analyzeDataset,
   filterAnalysisResults,
   sortAnalysisResults,
-  buildAnalysisExport
+  buildAnalysisExport,
+  getChartableColumns,
+  buildHistogram,
+  buildChartModel
 } = loadAppFunctions();
 
 function plain(value) {
@@ -159,5 +165,66 @@ const csvTextFromBig5 = new TextDecoder("big5").decode(csvBytes);
 assert.ok(csvTextFromBig5.includes("欄位名稱,型態,缺失值數"));
 assert.ok(csvTextFromBig5.includes("金額,數值,1,20.00%"));
 assert.strictEqual(Buffer.from(csvBytes).toString("utf8").includes("欄位名稱"), false);
+
+const chartableColumns = getChartableColumns(analysis);
+assert.deepStrictEqual(plain(chartableColumns), [
+  { name: "金額", type: "數值", defaultChartType: "summary" },
+  { name: "部門", type: "字串", defaultChartType: "topValues" },
+  { name: "備註", type: "字串", defaultChartType: "topValues" }
+]);
+
+assert.deepStrictEqual(plain(buildHistogram([-5, 0, 10, 20], 5)), {
+  min: -5,
+  max: 20,
+  binCount: 5,
+  bins: [
+    { label: "-5.00 - 0.00", labelLines: ["-5.00", "0.00"], start: -5, end: 0, count: 1 },
+    { label: "0.00 - 5.00", labelLines: ["0.00", "5.00"], start: 0, end: 5, count: 1 },
+    { label: "5.00 - 10.00", labelLines: ["5.00", "10.00"], start: 5, end: 10, count: 0 },
+    { label: "10.00 - 15.00", labelLines: ["10.00", "15.00"], start: 10, end: 15, count: 1 },
+    { label: "15.00 - 20.00", labelLines: ["15.00", "20.00"], start: 15, end: 20, count: 1 }
+  ]
+});
+
+assert.deepStrictEqual(plain(buildHistogram([7, 7, 7], 4)), {
+  min: 7,
+  max: 7,
+  binCount: 1,
+  bins: [
+    { label: "7.00", labelLines: ["7.00"], start: 7, end: 7, count: 3 }
+  ]
+});
+
+const summaryChart = buildChartModel(dataset, amount, "summary");
+assert.deepStrictEqual(plain(summaryChart), {
+  title: "金額 五數摘要",
+  type: "summary",
+  unitLabel: "數值",
+  items: [
+    { label: "最小值", value: -5 },
+    { label: "P25", value: -1.25 },
+    { label: "中位數", value: 5 },
+    { label: "P75", value: 12.5 },
+    { label: "最大值", value: 20 }
+  ]
+});
+
+const histogramChart = buildChartModel(dataset, amount, "histogram");
+assert.strictEqual(histogramChart.title, "金額 直方圖");
+assert.strictEqual(histogramChart.type, "histogram");
+assert.strictEqual(histogramChart.items.reduce((sum, item) => sum + item.value, 0), 4);
+assert.deepStrictEqual(plain(histogramChart.items[0].labelLines), ["-5.00", "-2.50"]);
+
+const topValuesChart = buildChartModel(dataset, department, "topValues");
+assert.deepStrictEqual(plain(topValuesChart), {
+  title: "部門 常見值",
+  type: "topValues",
+  unitLabel: "筆數",
+  items: [
+    { label: "風控", value: 3 },
+    { label: "稽核", value: 1 },
+    { label: "財務", value: 1 }
+  ]
+});
 
 console.log("encoding tests passed");
