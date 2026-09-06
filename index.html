@@ -1652,6 +1652,7 @@
       const CHART_TYPES = {
         summary: "五數摘要",
         histogram: "直方圖",
+        ecdf: "累積分布圖 (ECDF)",
         topValues: "常見值"
       };
       const ADV_CHART_KINDS = {
@@ -1659,10 +1660,20 @@
         crosstab: "字串交叉頻率表",
         boxplot: "箱型圖（異常值標註）",
         overview: "資料品質總覽",
-        line: "時間序列折線圖"
+        line: "時間序列折線圖",
+        correlation: "相關係數熱力矩陣",
+        missingmap: "缺失值分布熱力圖",
+        groupbar: "分組彙總長條圖",
+        parallel: "平行座標圖"
       };
       const CROSSTAB_MAX_DIMENSION = 30;
       const SCATTER_MAX_POINTS = 15000;
+      const CORRELATION_MAX_COLUMNS = 30;
+      const MISSING_MAP_BAND_COUNT = 48;
+      const MISSING_MAP_MAX_COLUMNS = 40;
+      const GROUP_BAR_MAX_CATEGORIES = 15;
+      const PARALLEL_MAX_AXES = 12;
+      const PARALLEL_MAX_LINES = 1000;
       const VIEW_COLUMNS = {
         quality: [
           { key: "name", label: "欄位名稱" },
@@ -1721,7 +1732,10 @@
         boxColumn: "",
         lineDate: "",
         lineValue: "",
-        lineAggregation: "mean"
+        lineAggregation: "mean",
+        groupCategory: "",
+        groupValue: "",
+        groupAggregation: "mean"
       };
       let big5EncodeMap = null;
 
@@ -2305,6 +2319,10 @@
           };
         }
 
+        if (analysisItem.type === NUMERIC_TYPE && chartType === "ecdf") {
+          return buildEcdfModel(analysisItem, getNumericColumnValues(dataset, analysisItem.name));
+        }
+
         if (analysisItem.type === NUMERIC_TYPE) {
           return {
             title: `${analysisItem.name} 五數摘要`,
@@ -2744,6 +2762,393 @@
         };
       }
 
+      function buildEcdfModel(analysisItem, values) {
+        if (!analysisItem || analysisItem.type !== NUMERIC_TYPE) {
+          return null;
+        }
+        const numericValues = [];
+        for (let i = 0; i < values.length; i += 1) {
+          if (Number.isFinite(values[i])) {
+            numericValues.push(values[i]);
+          }
+        }
+        if (numericValues.length === 0) {
+          return null;
+        }
+        const sorted = numericValues.slice().sort((a, b) => a - b);
+        const total = sorted.length;
+        const steps = [];
+        for (let i = 0; i < total; i += 1) {
+          if (i === total - 1 || sorted[i + 1] !== sorted[i]) {
+            steps.push({ value: sorted[i], cumulative: (i + 1) / total });
+          }
+        }
+        return {
+          type: "ecdf",
+          title: `${analysisItem.name} 累積分布圖 (ECDF)`,
+          unitLabel: "累積比例",
+          columnName: analysisItem.name,
+          n: total,
+          min: sorted[0],
+          max: sorted[total - 1],
+          steps,
+          p25: analysisItem.p25,
+          median: analysisItem.median,
+          p75: analysisItem.p75
+        };
+      }
+
+      function buildCorrelationMatrixModel(dataset, analysis) {
+        if (!dataset || !analysis) {
+          return null;
+        }
+        const numericItems = analysis.filter((item) => item.type === NUMERIC_TYPE);
+        if (numericItems.length < 2) {
+          return null;
+        }
+        const truncated = numericItems.length > CORRELATION_MAX_COLUMNS;
+        const headers = numericItems.slice(0, CORRELATION_MAX_COLUMNS).map((item) => item.name);
+        const columnCount = headers.length;
+        const rowCount = dataset.rows.length;
+        const columnValues = [];
+        const columnCounts = [];
+        for (let c = 0; c < columnCount; c += 1) {
+          columnValues.push(new Array(rowCount));
+          columnCounts.push(0);
+        }
+        for (let r = 0; r < rowCount; r += 1) {
+          const row = dataset.rows[r];
+          for (let c = 0; c < columnCount; c += 1) {
+            const text = String(row[headers[c]] || "").trim();
+            if (text !== "" && isValidNumber(text)) {
+              columnValues[c][r] = Number(text);
+              columnCounts[c] += 1;
+            }
+          }
+        }
+
+        const matrix = [];
+        for (let i = 0; i < columnCount; i += 1) {
+          const row = new Array(columnCount).fill(null);
+          row[i] = columnCounts[i] >= 2 ? 1 : null;
+          matrix.push(row);
+        }
+        for (let i = 0; i < columnCount; i += 1) {
+          for (let j = i + 1; j < columnCount; j += 1) {
+            const colA = columnValues[i];
+            const colB = columnValues[j];
+            let sumX = 0;
+            let sumY = 0;
+            let pairs = 0;
+            for (let r = 0; r < rowCount; r += 1) {
+              const x = colA[r];
+              const y = colB[r];
+              if (x !== undefined && y !== undefined) {
+                sumX += x;
+                sumY += y;
+                pairs += 1;
+              }
+            }
+            let correlation = null;
+            if (pairs >= 2) {
+              const meanX = sumX / pairs;
+              const meanY = sumY / pairs;
+              let numerator = 0;
+              let denominatorX = 0;
+              let denominatorY = 0;
+              for (let r = 0; r < rowCount; r += 1) {
+                const x = colA[r];
+                const y = colB[r];
+                if (x !== undefined && y !== undefined) {
+                  const dx = x - meanX;
+                  const dy = y - meanY;
+                  numerator += dx * dy;
+                  denominatorX += dx * dx;
+                  denominatorY += dy * dy;
+                }
+              }
+              const denominator = Math.sqrt(denominatorX * denominatorY);
+              if (denominator !== 0 && Number.isFinite(denominator)) {
+                correlation = Math.max(-1, Math.min(1, numerator / denominator));
+              }
+            }
+            matrix[i][j] = correlation;
+            matrix[j][i] = correlation;
+          }
+        }
+
+        return {
+          type: "correlation",
+          headers,
+          matrix,
+          columnCount,
+          totalNumericColumns: numericItems.length,
+          truncated,
+          rowN: rowCount
+        };
+      }
+
+      function buildMissingMapModel(dataset, analysis) {
+        if (!dataset || !analysis || dataset.rows.length === 0 || analysis.length === 0) {
+          return null;
+        }
+        const rowCount = dataset.rows.length;
+        const totalColumnCount = analysis.length;
+        const bandCount = Math.min(MISSING_MAP_BAND_COUNT, rowCount);
+        const bandSize = Math.ceil(rowCount / bandCount);
+        const actualBandCount = Math.ceil(rowCount / bandSize);
+        const bandRowCounts = new Array(actualBandCount).fill(0);
+        for (let r = 0; r < rowCount; r += 1) {
+          const bandIndex = Math.min(Math.floor(r / bandSize), actualBandCount - 1);
+          bandRowCounts[bandIndex] += 1;
+        }
+
+        const missingByBand = [];
+        for (let b = 0; b < actualBandCount; b += 1) {
+          missingByBand.push(new Array(totalColumnCount).fill(0));
+        }
+        let totalMissing = 0;
+        for (let r = 0; r < rowCount; r += 1) {
+          const row = dataset.rows[r];
+          const bandIndex = Math.min(Math.floor(r / bandSize), actualBandCount - 1);
+          const bandRow = missingByBand[bandIndex];
+          for (let c = 0; c < totalColumnCount; c += 1) {
+            const value = row[analysis[c].name];
+            if (isMissing(value) || String(value).trim() === "") {
+              bandRow[c] += 1;
+              totalMissing += 1;
+            }
+          }
+        }
+
+        const collapsed = totalColumnCount > MISSING_MAP_MAX_COLUMNS;
+        const keptCount = collapsed ? MISSING_MAP_MAX_COLUMNS - 1 : totalColumnCount;
+        const columns = [];
+        for (let c = 0; c < keptCount; c += 1) {
+          const item = analysis[c];
+          const bandValues = [];
+          for (let b = 0; b < actualBandCount; b += 1) {
+            bandValues.push(missingByBand[b][c]);
+          }
+          columns.push({
+            name: item.name,
+            missingCount: item.missingCount,
+            missingRate: item.missingRate,
+            bandValues,
+            columnSpan: 1,
+            allMissing: item.missingCount === rowCount
+          });
+        }
+        if (collapsed) {
+          const restCount = totalColumnCount - keptCount;
+          const bandValues = [];
+          let missingCount = 0;
+          for (let b = 0; b < actualBandCount; b += 1) {
+            let sum = 0;
+            for (let c = keptCount; c < totalColumnCount; c += 1) {
+              sum += missingByBand[b][c];
+            }
+            bandValues.push(sum);
+          }
+          for (let c = keptCount; c < totalColumnCount; c += 1) {
+            missingCount += analysis[c].missingCount;
+          }
+          columns.push({
+            name: `其他 ${restCount} 欄`,
+            missingCount,
+            missingRate: rowCount * restCount > 0 ? missingCount / (rowCount * restCount) : 0,
+            bandValues,
+            columnSpan: restCount,
+            allMissing: missingCount === rowCount * restCount
+          });
+        }
+
+        return {
+          type: "missingmap",
+          columns,
+          bandCount: actualBandCount,
+          bandSize,
+          bandRowCounts,
+          rowCount,
+          totalColumns: totalColumnCount,
+          totalMissing,
+          overallRate: rowCount * totalColumnCount > 0 ? totalMissing / (rowCount * totalColumnCount) : 0,
+          collapsed,
+          sampled: bandSize > 1
+        };
+      }
+
+      function buildGroupBarModel(dataset, categoryHeader, valueHeader, aggregation) {
+        if (!dataset || !categoryHeader || !valueHeader || categoryHeader === valueHeader) {
+          return null;
+        }
+        const metricMode = aggregation === "sum" ? "sum" : (aggregation === "median" ? "median" : "mean");
+        const groups = new Map();
+        let includedRows = 0;
+        let excludedRows = 0;
+        for (let r = 0; r < dataset.rows.length; r += 1) {
+          const row = dataset.rows[r];
+          const categoryText = String(row[categoryHeader] || "").trim();
+          const valueText = String(row[valueHeader] || "").trim();
+          if (categoryText === "" || valueText === "" || !isValidNumber(valueText)) {
+            excludedRows += 1;
+            continue;
+          }
+          let group = groups.get(categoryText);
+          if (!group) {
+            group = { label: categoryText, sum: 0, count: 0, values: [] };
+            groups.set(categoryText, group);
+          }
+          const numericValue = Number(valueText);
+          group.sum += numericValue;
+          group.count += 1;
+          if (metricMode === "median") {
+            group.values.push(numericValue);
+          }
+          includedRows += 1;
+        }
+        if (groups.size === 0) {
+          return null;
+        }
+
+        let groupList = Array.from(groups.values())
+          .sort((a, b) => b.count - a.count || (a.label < b.label ? -1 : 1));
+        let collapsed = false;
+        if (groupList.length > GROUP_BAR_MAX_CATEGORIES) {
+          collapsed = true;
+          const kept = groupList.slice(0, GROUP_BAR_MAX_CATEGORIES - 1);
+          const rest = groupList.slice(GROUP_BAR_MAX_CATEGORIES - 1);
+          const other = { label: `其他 ${rest.length} 類`, sum: 0, count: 0, values: [] };
+          for (let i = 0; i < rest.length; i += 1) {
+            other.sum += rest[i].sum;
+            other.count += rest[i].count;
+            if (metricMode === "median") {
+              for (let v = 0; v < rest[i].values.length; v += 1) {
+                other.values.push(rest[i].values[v]);
+              }
+            }
+          }
+          kept.push(other);
+          groupList = kept;
+        }
+
+        const items = groupList.map((group) => {
+          let value;
+          if (metricMode === "sum") {
+            value = group.sum;
+          } else if (metricMode === "median") {
+            const sorted = group.values.slice().sort((a, b) => a - b);
+            value = calculateQuantile(sorted, 0.5);
+          } else {
+            value = group.count > 0 ? group.sum / group.count : 0;
+          }
+          return { label: group.label, value, count: group.count };
+        });
+
+        return {
+          type: "groupbar",
+          categoryHeader,
+          valueHeader,
+          aggregation: metricMode,
+          items,
+          collapsed,
+          includedRows,
+          excludedRows,
+          categoryCount: groups.size
+        };
+      }
+
+      function buildParallelModel(dataset, analysis) {
+        if (!dataset || !analysis) {
+          return null;
+        }
+        const numericItems = analysis.filter((item) => item.type === NUMERIC_TYPE);
+        if (numericItems.length < 2) {
+          return null;
+        }
+        const truncated = numericItems.length > PARALLEL_MAX_AXES;
+        const headers = numericItems.slice(0, PARALLEL_MAX_AXES).map((item) => item.name);
+        const axisCount = headers.length;
+        const rowCount = dataset.rows.length;
+
+        const validRows = [];
+        let excluded = 0;
+        for (let r = 0; r < rowCount; r += 1) {
+          const row = dataset.rows[r];
+          const values = new Array(axisCount);
+          let rowOk = true;
+          for (let c = 0; c < axisCount; c += 1) {
+            const text = String(row[headers[c]] || "").trim();
+            if (text === "" || !isValidNumber(text)) {
+              rowOk = false;
+              break;
+            }
+            values[c] = Number(text);
+          }
+          if (rowOk) {
+            for (let c = 0; c < axisCount; c += 1) {
+              validRows.push(values[c]);
+            }
+          } else {
+            excluded += 1;
+          }
+        }
+        const keptRows = validRows.length / axisCount;
+        if (keptRows === 0) {
+          return null;
+        }
+
+        const axes = [];
+        for (let c = 0; c < axisCount; c += 1) {
+          let min = Infinity;
+          let max = -Infinity;
+          for (let r = 0; r < keptRows; r += 1) {
+            const value = validRows[r * axisCount + c];
+            if (value < min) min = value;
+            if (value > max) max = value;
+          }
+          axes.push({ name: headers[c], min, max, degenerate: min === max });
+        }
+
+        const lineCount = Math.min(keptRows, PARALLEL_MAX_LINES);
+        const step = keptRows > lineCount ? keptRows / lineCount : 1;
+        const lines = [];
+        for (let i = 0; i < lineCount; i += 1) {
+          const rowIndex = Math.min(Math.floor(i * step), keptRows - 1);
+          const line = new Array(axisCount);
+          for (let c = 0; c < axisCount; c += 1) {
+            const axis = axes[c];
+            const value = validRows[rowIndex * axisCount + c];
+            line[c] = axis.degenerate ? 0.5 : (value - axis.min) / (axis.max - axis.min);
+          }
+          lines.push(line);
+        }
+
+        const medianLine = new Array(axisCount);
+        for (let c = 0; c < axisCount; c += 1) {
+          const axisValues = [];
+          for (let r = 0; r < keptRows; r += 1) {
+            axisValues.push(validRows[r * axisCount + c]);
+          }
+          axisValues.sort((a, b) => a - b);
+          const median = calculateQuantile(axisValues, 0.5);
+          medianLine[c] = axes[c].degenerate ? 0.5 : (median - axes[c].min) / (axes[c].max - axes[c].min);
+        }
+
+        return {
+          type: "parallel",
+          axes,
+          lines,
+          medianLine,
+          keptRows,
+          drawnLines: lineCount,
+          excluded,
+          totalRows: rowCount,
+          truncated,
+          totalNumericColumns: numericItems.length
+        };
+      }
+
       function buildAdvancedChartModel() {
         const dataset = state.activeDataset;
         if (!dataset) {
@@ -2776,6 +3181,18 @@
         }
         if (kind === "line") {
           return buildTimeSeriesModel(dataset, state.lineDate, state.lineValue, state.lineAggregation);
+        }
+        if (kind === "correlation") {
+          return buildCorrelationMatrixModel(dataset, analysis);
+        }
+        if (kind === "missingmap") {
+          return buildMissingMapModel(dataset, analysis);
+        }
+        if (kind === "groupbar") {
+          return buildGroupBarModel(dataset, state.groupCategory, state.groupValue, state.groupAggregation);
+        }
+        if (kind === "parallel") {
+          return buildParallelModel(dataset, analysis);
         }
         return null;
       }
@@ -3284,7 +3701,7 @@
           return [];
         }
         if (analysisItem.type === NUMERIC_TYPE) {
-          return ["summary", "histogram"];
+          return ["summary", "histogram", "ecdf"];
         }
         return ["topValues"];
       }
@@ -3381,6 +3798,8 @@
         state.boxColumn = resetIfMissing(state.boxColumn, numericColumns);
         state.lineDate = resetIfMissing(state.lineDate, dateColumns);
         state.lineValue = resetIfMissing(state.lineValue, numericColumns);
+        state.groupCategory = resetIfMissing(state.groupCategory, stringColumns);
+        state.groupValue = resetIfMissing(state.groupValue, numericColumns);
       }
 
       function buildAdvancedFieldControls() {
@@ -3483,6 +3902,38 @@
           valueField.selectElement.value = state.lineValue;
           aggField.selectElement.value = state.lineAggregation;
           els.advChartFields.append(dateField.field, valueField.field, aggField.field);
+        } else if (kind === "groupbar") {
+          const categoryField = createField(els.advChartFields, stringColumns.map((name) => ({ value: name, label: name })), "類別欄位（字串）", () => {
+            state.groupCategory = categoryField.selectElement.value;
+            renderChart();
+          });
+          const valueField = createField(els.advChartFields, numericColumns.map((name) => ({ value: name, label: name })), "數值欄位", () => {
+            state.groupValue = valueField.selectElement.value;
+            renderChart();
+          });
+          const aggField = createField(els.advChartFields, [
+            { value: "mean", label: "平均值" },
+            { value: "median", label: "中位數" },
+            { value: "sum", label: "總和" }
+          ], "彙總方式", () => {
+            state.groupAggregation = aggField.selectElement.value;
+            renderChart();
+          });
+          categoryField.selectElement.value = state.groupCategory;
+          valueField.selectElement.value = state.groupValue;
+          aggField.selectElement.value = state.groupAggregation;
+          els.advChartFields.append(categoryField.field, valueField.field, aggField.field);
+        } else if (kind === "correlation" || kind === "missingmap" || kind === "parallel") {
+          const note = document.createElement("p");
+          note.className = "chart-message";
+          if (kind === "correlation") {
+            note.textContent = `此圖表不需選擇欄位，將以所有數值欄位（上限 ${CORRELATION_MAX_COLUMNS} 欄）計算兩兩 Pearson 相關係數。`;
+          } else if (kind === "missingmap") {
+            note.textContent = "此圖表不需選擇欄位，將以所有欄位的缺失狀況依資料列分帶繪製熱力圖。";
+          } else {
+            note.textContent = `此圖表不需選擇欄位，將以所有數值欄位（上限 ${PARALLEL_MAX_AXES} 軸）繪製平行座標圖。`;
+          }
+          els.advChartFields.appendChild(note);
         }
       }
 
@@ -3659,6 +4110,103 @@
         });
       }
 
+      function drawEcdfChart(context, model, width, height) {
+        const chartLeft = 92;
+        const chartRight = width - 40;
+        const chartTop = 78;
+        const chartBottom = height - 64;
+        const chartWidth = chartRight - chartLeft;
+        const chartHeight = chartBottom - chartTop;
+        const range = model.max - model.min || 1;
+        const sx = (value) => chartLeft + ((value - model.min) / range) * chartWidth;
+        const sy = (cumulative) => chartBottom - cumulative * chartHeight;
+
+        context.strokeStyle = "#d9dee7";
+        context.lineWidth = 1;
+        context.beginPath();
+        context.moveTo(chartLeft, chartTop);
+        context.lineTo(chartLeft, chartBottom);
+        context.lineTo(chartRight, chartBottom);
+        context.stroke();
+
+        context.font = "11px Microsoft JhengHei, sans-serif";
+        context.textAlign = "right";
+        context.textBaseline = "middle";
+        for (let i = 0; i <= 4; i += 1) {
+          const tick = i / 4;
+          const y = sy(tick);
+          context.strokeStyle = "#eef1f5";
+          context.beginPath();
+          context.moveTo(chartLeft, y);
+          context.lineTo(chartRight, y);
+          context.stroke();
+          context.fillStyle = "#627083";
+          context.fillText(`${Math.round(tick * 100)}%`, chartLeft - 8, y);
+        }
+
+        context.strokeStyle = "#146c94";
+        context.lineWidth = 2;
+        context.beginPath();
+        let previousY = sy(model.steps[0].cumulative);
+        context.moveTo(sx(model.steps[0].value), previousY);
+        for (let i = 1; i < model.steps.length; i += 1) {
+          const x = sx(model.steps[i].value);
+          context.lineTo(x, previousY);
+          previousY = sy(model.steps[i].cumulative);
+          context.lineTo(x, previousY);
+        }
+        context.stroke();
+
+        const markers = [
+          { label: "P25", value: model.p25 },
+          { label: "中位數", value: model.median },
+          { label: "P75", value: model.p75 }
+        ];
+        context.setLineDash([5, 4]);
+        context.strokeStyle = "#b42318";
+        context.lineWidth = 1.5;
+        for (const marker of markers) {
+          if (marker.value === null || marker.value === undefined || !Number.isFinite(marker.value)) {
+            continue;
+          }
+          const x = sx(marker.value);
+          context.beginPath();
+          context.moveTo(x, chartTop);
+          context.lineTo(x, chartBottom);
+          context.stroke();
+        }
+        context.setLineDash([]);
+
+        context.font = "12px Microsoft JhengHei, sans-serif";
+        context.textAlign = "center";
+        context.textBaseline = "top";
+        const axisLabels = [
+          { value: model.min, text: `最小 ${formatChartNumber(model.min)}` },
+          { value: model.p25, text: `P25 ${formatChartNumber(model.p25)}` },
+          { value: model.median, text: `中位數 ${formatChartNumber(model.median)}` },
+          { value: model.p75, text: `P75 ${formatChartNumber(model.p75)}` },
+          { value: model.max, text: `最大 ${formatChartNumber(model.max)}` }
+        ];
+        for (const label of axisLabels) {
+          if (label.value === null || label.value === undefined || !Number.isFinite(label.value)) {
+            continue;
+          }
+          const x = sx(label.value);
+          context.fillStyle = "#627083";
+          context.fillText(fitCanvasText(context, label.text, 120), Math.max(chartLeft, Math.min(chartRight, x)), chartBottom + 10);
+        }
+
+        context.save();
+        context.translate(20, chartTop + chartHeight / 2);
+        context.rotate(-Math.PI / 2);
+        context.fillStyle = "#627083";
+        context.font = "13px Microsoft JhengHei, sans-serif";
+        context.textAlign = "center";
+        context.textBaseline = "top";
+        context.fillText("小於等於該值的資料比例", 0, 0);
+        context.restore();
+      }
+
       function renderChart() {
         if (state.activeChartTab === "advanced") {
           const advancedModel = buildAdvancedChartModel();
@@ -3683,7 +4231,7 @@
         const { context, width, height } = preparedCanvas;
         const analysisItem = getSelectedAnalysisItem();
         const model = buildChartModel(state.activeDataset, analysisItem, state.activeChartType);
-        if (!model || model.items.length === 0) {
+        if (!model || (model.type === "ecdf" ? model.steps.length === 0 : model.items.length === 0)) {
           els.chartMessage.textContent = "這個欄位沒有可視覺化的有效資料。";
           els.downloadChart.disabled = true;
           return;
@@ -3692,11 +4240,15 @@
         drawChartTitle(context, model, width);
         if (model.type === "summary") {
           drawSummaryChart(context, model, width, height);
+        } else if (model.type === "ecdf") {
+          drawEcdfChart(context, model, width, height);
         } else {
           drawBarChart(context, model, width, height);
         }
 
-        els.chartMessage.textContent = `${model.title}，共 ${model.items.length} 個資料點。`;
+        els.chartMessage.textContent = model.type === "ecdf"
+          ? `${model.columnName} 累積分布，共 ${model.n} 筆有效資料，P25=${formatChartNumber(model.p25)}、中位數=${formatChartNumber(model.median)}、P75=${formatChartNumber(model.p75)}。`
+          : `${model.title}，共 ${model.items.length} 個資料點。`;
         els.downloadChart.disabled = false;
       }
 
@@ -3710,6 +4262,14 @@
         if (kind === "overview" && model) {
           const rows = Math.max(model.missingRateItems.length, 1);
           return { width: 980, height: 110 + rows * 30 + 40 };
+        }
+        if (kind === "correlation" && model) {
+          const size = Math.max(model.columnCount, 1);
+          return { width: 200 + size * 110 + 130, height: 130 + size * 34 + 80 };
+        }
+        if (kind === "missingmap" && model) {
+          const colCount = Math.max(model.columns.length, 1);
+          return { width: 180 + colCount * 90 + 40, height: 150 + model.bandCount * 9 + 90 };
         }
         return null;
       }
@@ -3750,9 +4310,33 @@
           showEmpty("箱型圖至少需要 1 個數值欄位。");
           return;
         }
+        if (kind === "correlation" && getNumericColumnNames().length < 2) {
+          showEmpty("相關係數熱力矩陣至少需要 2 個數值欄位。");
+          return;
+        }
+        if (kind === "missingmap" && (!state.activeDataset || state.activeDataset.rows.length === 0)) {
+          showEmpty("缺失值分布熱力圖至少需要 1 列資料。");
+          return;
+        }
+        if (kind === "groupbar" && getStringColumnNames().length === 0) {
+          showEmpty("分組彙總長條圖至少需要 1 個字串欄位。");
+          return;
+        }
+        if (kind === "groupbar" && getNumericColumnNames().length === 0) {
+          showEmpty("分組彙總長條圖至少需要 1 個數值欄位。");
+          return;
+        }
+        if (kind === "parallel" && getNumericColumnNames().length < 2) {
+          showEmpty("平行座標圖至少需要 2 個數值欄位。");
+          return;
+        }
 
         if (!model || (kind !== "overview" && model.points && model.points.length === 0) ||
-            (kind === "overview" && model.missingRateItems.length === 0)) {
+            (kind === "overview" && model.missingRateItems.length === 0) ||
+            (kind === "correlation" && model.headers.length < 2) ||
+            (kind === "missingmap" && model.columns.length === 0) ||
+            (kind === "groupbar" && model.items.length === 0) ||
+            (kind === "parallel" && model.lines.length === 0)) {
           showEmpty("這個圖表沒有可視覺化的有效資料。");
           return;
         }
@@ -3802,6 +4386,45 @@
           const aggText = model.aggregation === "sum" ? "總和" : "平均";
           els.chartMessage.textContent =
             `${model.dateHeader} → ${model.valueHeader}，${aggText}彙總，${model.points.length} 個時間點，排除 ${model.excluded} 列。`;
+          els.downloadChart.disabled = false;
+          return;
+        }
+
+        if (kind === "correlation") {
+          drawCorrelationMatrixChart(context, model, width, height);
+          const truncatedText = model.truncated ? `（超過 ${CORRELATION_MAX_COLUMNS} 欄，已取前 ${CORRELATION_MAX_COLUMNS} 欄）` : "";
+          els.chartMessage.textContent =
+            `相關係數熱力矩陣，${model.columnCount} 個數值欄位兩兩 Pearson 相關${truncatedText}，紅色為正相關、藍色為負相關。`;
+          els.downloadChart.disabled = false;
+          return;
+        }
+
+        if (kind === "missingmap") {
+          drawMissingMapChart(context, model, width, height);
+          const collapsedText = model.collapsed ? `（超過 ${MISSING_MAP_MAX_COLUMNS} 欄，其餘已彙整）` : "";
+          const sampledText = model.sampled ? `，每帶約 ${model.bandSize} 列` : "";
+          els.chartMessage.textContent =
+            `缺失值分布熱力圖，共 ${model.totalColumns} 欄${collapsedText}、${model.rowCount} 列分成 ${model.bandCount} 帶${sampledText}，總缺失 ${model.totalMissing.toLocaleString("zh-TW")} 格（${formatPercent(model.overallRate)}）。`;
+          els.downloadChart.disabled = false;
+          return;
+        }
+
+        if (kind === "groupbar") {
+          drawGroupBarChart(context, model, width, height);
+          const modeText = model.aggregation === "sum" ? "總和" : (model.aggregation === "median" ? "中位數" : "平均");
+          const collapsedText = model.collapsed ? "（類別過多已彙整至「其他」）" : "";
+          els.chartMessage.textContent =
+            `${model.categoryHeader} × ${model.valueHeader}，單位：${modeText}${collapsedText}，${model.categoryCount} 類，納入 ${model.includedRows} 列，排除 ${model.excludedRows} 列。`;
+          els.downloadChart.disabled = false;
+          return;
+        }
+
+        if (kind === "parallel") {
+          drawParallelChart(context, model, width, height);
+          const truncatedText = model.truncated ? `（超過 ${PARALLEL_MAX_AXES} 欄，已取前 ${PARALLEL_MAX_AXES} 軸）` : "";
+          const degenerateText = model.axes.some((axis) => axis.degenerate) ? "，含退化軸（全同值）" : "";
+          els.chartMessage.textContent =
+            `平行座標圖，${model.axes.length} 個數值軸${truncatedText}${degenerateText}，有效 ${model.keptRows} 列（繪製 ${model.drawnLines} 列），排除 ${model.excluded} 列含缺失。`;
           els.downloadChart.disabled = false;
         }
       }
@@ -4191,6 +4814,314 @@
         context.fillText(`單位：${model.aggregation === "sum" ? "總和" : "平均"}`, width - 40, 44);
       }
 
+      function correlationCellColor(value, isDiagonal) {
+        if (value === null) {
+          return "#f2f4f7";
+        }
+        if (isDiagonal) {
+          return "#d7ecf5";
+        }
+        return value >= 0
+          ? `rgba(180, 35, 24, ${0.08 + Math.abs(value) * 0.55})`
+          : `rgba(20, 108, 148, ${0.08 + Math.abs(value) * 0.55})`;
+      }
+
+      function drawCorrelationMatrixChart(context, model, width, height) {
+        const headerHeight = 44;
+        const rowLabelWidth = 130;
+        const chartLeft = rowLabelWidth + 12;
+        const chartTop = headerHeight + 12;
+        const cellW = 110;
+        const cellH = 34;
+        const size = model.columnCount;
+
+        for (let i = 0; i < size; i += 1) {
+          for (let j = 0; j < size; j += 1) {
+            const x = chartLeft + j * cellW;
+            const y = chartTop + i * cellH;
+            const r = model.matrix[i][j];
+            context.fillStyle = correlationCellColor(r, i === j);
+            context.fillRect(x, y, cellW, cellH);
+            context.strokeStyle = "#e5e9ef";
+            context.lineWidth = 1;
+            context.strokeRect(x, y, cellW, cellH);
+            context.fillStyle = "#17202a";
+            context.font = "11px Microsoft JhengHei, sans-serif";
+            context.textAlign = "center";
+            context.textBaseline = "middle";
+            context.fillText(r === null ? "-" : r.toFixed(2), x + cellW / 2, y + cellH / 2);
+          }
+        }
+
+        context.font = "12px Microsoft JhengHei, sans-serif";
+        context.textAlign = "right";
+        context.textBaseline = "alphabetic";
+        context.fillStyle = "#627083";
+        for (let j = 0; j < size; j += 1) {
+          context.fillText(fitCanvasText(context, model.headers[j], cellW - 4), chartLeft + (j + 1) * cellW - 4, headerHeight);
+        }
+        for (let i = 0; i < size; i += 1) {
+          context.fillText(fitCanvasText(context, model.headers[i], rowLabelWidth), chartLeft - 6, chartTop + i * cellH + cellH / 2 + 4);
+        }
+
+        context.fillStyle = "#17202a";
+        context.font = "700 20px Microsoft JhengHei, sans-serif";
+        context.textAlign = "left";
+        context.textBaseline = "alphabetic";
+        context.fillText(fitCanvasText(context, "數值欄位相關係數矩陣", width - 60), chartLeft, 26);
+        context.font = "12px Microsoft JhengHei, sans-serif";
+        context.fillStyle = "#627083";
+        context.textAlign = "right";
+        context.fillText("單位：Pearson r（-1 至 +1）", width - 40, 26);
+
+        const legendY = chartTop + size * cellH + 18;
+        const legendW = 200;
+        const gradient = context.createLinearGradient(chartLeft, 0, chartLeft + legendW, 0);
+        gradient.addColorStop(0, "rgba(20, 108, 148, 0.63)");
+        gradient.addColorStop(0.5, "#ffffff");
+        gradient.addColorStop(1, "rgba(180, 35, 24, 0.63)");
+        context.fillStyle = gradient;
+        context.fillRect(chartLeft, legendY, legendW, 12);
+        context.strokeStyle = "#d9dee7";
+        context.lineWidth = 1;
+        context.strokeRect(chartLeft, legendY, legendW, 12);
+        context.font = "11px Microsoft JhengHei, sans-serif";
+        context.fillStyle = "#627083";
+        context.textBaseline = "top";
+        context.textAlign = "left";
+        context.fillText("-1", chartLeft, legendY + 16);
+        context.textAlign = "center";
+        context.fillText("0", chartLeft + legendW / 2, legendY + 16);
+        context.textAlign = "right";
+        context.fillText("+1", chartLeft + legendW, legendY + 16);
+      }
+
+      function missingMapCellColor(rate) {
+        if (rate <= 0) {
+          return "#f8fafc";
+        }
+        return `rgba(180, 35, 24, ${0.12 + Math.min(1, rate) * 0.75})`;
+      }
+
+      function drawMissingMapChart(context, model, width, height) {
+        const headerHeight = 56;
+        const rowLabelWidth = 96;
+        const chartLeft = rowLabelWidth + 12;
+        const chartTop = headerHeight + 12;
+        const cellW = 90;
+        const cellH = 9;
+        const colCount = model.columns.length;
+        const bandCount = model.bandCount;
+
+        for (let b = 0; b < bandCount; b += 1) {
+          const bandRows = model.bandRowCounts[b];
+          for (let c = 0; c < colCount; c += 1) {
+            const column = model.columns[c];
+            const denominator = bandRows * (column.columnSpan || 1);
+            const rate = denominator > 0 ? column.bandValues[b] / denominator : 0;
+            const x = chartLeft + c * cellW;
+            const y = chartTop + b * cellH;
+            context.fillStyle = missingMapCellColor(rate);
+            context.fillRect(x, y, cellW, cellH);
+            context.strokeStyle = "#eef1f5";
+            context.lineWidth = 1;
+            context.strokeRect(x, y, cellW, cellH);
+          }
+        }
+
+        context.font = "11px Microsoft JhengHei, sans-serif";
+        context.textAlign = "right";
+        context.textBaseline = "middle";
+        context.fillStyle = "#627083";
+        for (let b = 0; b < bandCount; b += 1) {
+          const startRow = b * model.bandSize + 1;
+          const endRow = b * model.bandSize + model.bandRowCounts[b];
+          const label = startRow === endRow ? `${startRow}` : `${startRow}–${endRow}`;
+          context.fillText(label, chartLeft - 6, chartTop + b * cellH + cellH / 2);
+        }
+
+        context.textAlign = "center";
+        context.textBaseline = "top";
+        for (let c = 0; c < colCount; c += 1) {
+          const column = model.columns[c];
+          const x = chartLeft + c * cellW + cellW / 2;
+          context.fillStyle = column.allMissing ? "#b42318" : "#17202a";
+          context.fillText(fitCanvasText(context, column.name, cellW - 4), x, headerHeight - 26);
+          context.fillStyle = "#627083";
+          context.fillText(fitCanvasText(context, formatPercent(column.missingRate), cellW - 4), x, headerHeight - 12);
+        }
+
+        context.fillStyle = "#17202a";
+        context.font = "700 20px Microsoft JhengHei, sans-serif";
+        context.textAlign = "left";
+        context.textBaseline = "alphabetic";
+        context.fillText(fitCanvasText(context, "缺失值分布熱力圖", width - 60), chartLeft, 26);
+        context.font = "12px Microsoft JhengHei, sans-serif";
+        context.fillStyle = "#627083";
+        context.textAlign = "right";
+        context.fillText("單位：帶內缺失比例", width - 40, 26);
+
+        const legendY = chartTop + bandCount * cellH + 16;
+        const legendW = 200;
+        const gradient = context.createLinearGradient(chartLeft, 0, chartLeft + legendW, 0);
+        gradient.addColorStop(0, "#f8fafc");
+        gradient.addColorStop(1, "rgba(180, 35, 24, 0.87)");
+        context.fillStyle = gradient;
+        context.fillRect(chartLeft, legendY, legendW, 12);
+        context.strokeStyle = "#d9dee7";
+        context.lineWidth = 1;
+        context.strokeRect(chartLeft, legendY, legendW, 12);
+        context.font = "11px Microsoft JhengHei, sans-serif";
+        context.fillStyle = "#627083";
+        context.textBaseline = "top";
+        context.textAlign = "left";
+        context.fillText("0%", chartLeft, legendY + 16);
+        context.textAlign = "right";
+        context.fillText("100%", chartLeft + legendW, legendY + 16);
+        context.textAlign = "left";
+        context.fillText("紅色越深代表該區塊缺失越多", chartLeft + legendW + 16, legendY + 1);
+      }
+
+      function drawGroupBarChart(context, model, width, height) {
+        const chartLeft = 96;
+        const chartTop = 78;
+        const chartWidth = width - 168;
+        const chartHeight = height - 176;
+        const items = model.items;
+        const maxValue = Math.max(...items.map((item) => item.value), 1);
+        const minValue = Math.min(...items.map((item) => item.value), 0);
+        const hasNegative = minValue < 0;
+        const valueRange = maxValue - minValue || 1;
+        const sy = (value) => hasNegative
+          ? chartTop + chartHeight * ((maxValue - value) / valueRange)
+          : chartTop + chartHeight - (value / (maxValue || 1)) * chartHeight;
+        const zeroY = hasNegative ? sy(0) : chartTop + chartHeight;
+        const gap = 12;
+        const barWidth = Math.max(18, (chartWidth - gap * (items.length - 1)) / Math.max(items.length, 1));
+        const modeText = model.aggregation === "sum" ? "總和" : (model.aggregation === "median" ? "中位數" : "平均");
+
+        context.strokeStyle = "#d9dee7";
+        context.lineWidth = 1;
+        context.beginPath();
+        context.moveTo(chartLeft, chartTop);
+        context.lineTo(chartLeft, chartTop + chartHeight);
+        context.lineTo(chartLeft + chartWidth, chartTop + chartHeight);
+        context.stroke();
+
+        if (hasNegative) {
+          context.strokeStyle = "#9aa5b1";
+          context.beginPath();
+          context.moveTo(chartLeft, zeroY);
+          context.lineTo(chartLeft + chartWidth, zeroY);
+          context.stroke();
+        }
+
+        context.font = "13px Microsoft JhengHei, sans-serif";
+        context.textAlign = "center";
+        context.textBaseline = "top";
+        items.forEach((item, index) => {
+          const x = chartLeft + index * (barWidth + gap);
+          const valueY = sy(item.value);
+          const barHeight = item.value === 0 ? 0 : Math.max(2, Math.abs(valueY - zeroY));
+          const y = item.value >= 0 ? valueY : zeroY;
+
+          context.fillStyle = "#146c94";
+          context.fillRect(x, y, barWidth, barHeight);
+          context.fillStyle = "#17202a";
+          context.fillText(formatChartNumber(item.value), x + barWidth / 2, item.value >= 0 ? Math.max(chartTop, y - 22) : y + barHeight + 4);
+          context.fillStyle = "#627083";
+          context.fillText(fitCanvasText(context, item.label, barWidth + gap), x + barWidth / 2, chartTop + chartHeight + 14);
+          context.fillText(`n=${item.count}`, x + barWidth / 2, chartTop + chartHeight + 33);
+        });
+
+        context.fillStyle = "#17202a";
+        context.font = "700 20px Microsoft JhengHei, sans-serif";
+        context.textAlign = "left";
+        context.textBaseline = "alphabetic";
+        context.fillText(fitCanvasText(context, `${model.categoryHeader} × ${model.valueHeader} 分組彙總`, width - 80), chartLeft, 44);
+        context.fillStyle = "#627083";
+        context.font = "12px Microsoft JhengHei, sans-serif";
+        context.textAlign = "right";
+        context.fillText(`單位：${modeText}`, width - 40, 44);
+      }
+
+      function drawParallelChart(context, model, width, height) {
+        const chartTop = 88;
+        const chartBottom = height - 84;
+        const chartLeft = 60;
+        const chartRight = width - 40;
+        const axisCount = model.axes.length;
+        const span = axisCount > 1 ? (chartRight - chartLeft) / (axisCount - 1) : 0;
+        const axisX = (index) => chartLeft + index * span;
+        const sy = (normalized) => chartBottom - normalized * (chartBottom - chartTop);
+
+        for (let i = 0; i < axisCount; i += 1) {
+          context.strokeStyle = "#d9dee7";
+          context.lineWidth = 1;
+          context.beginPath();
+          context.moveTo(axisX(i), chartTop);
+          context.lineTo(axisX(i), chartBottom);
+          context.stroke();
+        }
+
+        context.strokeStyle = "rgba(23, 32, 42, 0.18)";
+        context.lineWidth = 1;
+        for (let l = 0; l < model.lines.length; l += 1) {
+          const line = model.lines[l];
+          context.beginPath();
+          for (let c = 0; c < axisCount; c += 1) {
+            const x = axisX(c);
+            const y = sy(line[c]);
+            if (c === 0) {
+              context.moveTo(x, y);
+            } else {
+              context.lineTo(x, y);
+            }
+          }
+          context.stroke();
+        }
+
+        context.strokeStyle = "#b42318";
+        context.lineWidth = 3;
+        context.beginPath();
+        for (let c = 0; c < axisCount; c += 1) {
+          const x = axisX(c);
+          const y = sy(model.medianLine[c]);
+          if (c === 0) {
+            context.moveTo(x, y);
+          } else {
+            context.lineTo(x, y);
+          }
+        }
+        context.stroke();
+
+        for (let i = 0; i < axisCount; i += 1) {
+          const axis = model.axes[i];
+          const x = axisX(i);
+          const labelWidth = Math.max(Math.min(span - 8, 110), 44);
+          context.font = "11px Microsoft JhengHei, sans-serif";
+          context.fillStyle = "#627083";
+          context.textAlign = "center";
+          context.textBaseline = "bottom";
+          context.fillText(fitCanvasText(context, axis.degenerate ? "全同值" : formatChartNumber(axis.max), labelWidth), x, chartTop - 6);
+          context.textBaseline = "top";
+          context.fillText(fitCanvasText(context, axis.degenerate ? "全同值" : formatChartNumber(axis.min), labelWidth), x, chartBottom + 6);
+          context.fillStyle = "#17202a";
+          context.font = "700 12px Microsoft JhengHei, sans-serif";
+          context.fillText(fitCanvasText(context, axis.name, Math.max(labelWidth, 60)), x, chartBottom + 26);
+        }
+
+        context.fillStyle = "#17202a";
+        context.font = "700 20px Microsoft JhengHei, sans-serif";
+        context.textAlign = "left";
+        context.textBaseline = "alphabetic";
+        context.fillText(fitCanvasText(context, "數值欄位平行座標圖", width - 80), chartLeft, 44);
+        context.fillStyle = "#627083";
+        context.font = "12px Microsoft JhengHei, sans-serif";
+        context.textAlign = "right";
+        context.fillText("紅線為各軸中位數", width - 40, 44);
+      }
+
       function sanitizeFilePart(value) {
         return String(value || "chart").replace(/[\\/:*?"<>|]+/g, "-").trim() || "chart";
       }
@@ -4212,6 +5143,14 @@
             columnName = `boxplot-${sanitizeFilePart(state.boxColumn)}`;
           } else if (kind === "overview") {
             columnName = "overview";
+          } else if (kind === "correlation") {
+            columnName = "correlation";
+          } else if (kind === "missingmap") {
+            columnName = "missingmap";
+          } else if (kind === "groupbar") {
+            columnName = `groupbar-${sanitizeFilePart(state.groupCategory)}-${sanitizeFilePart(state.groupValue)}`;
+          } else if (kind === "parallel") {
+            columnName = "parallel";
           } else {
             columnName = `line-${sanitizeFilePart(state.lineDate)}-${sanitizeFilePart(state.lineValue)}`;
           }
@@ -4253,6 +5192,9 @@
         state.lineDate = "";
         state.lineValue = "";
         state.lineAggregation = "mean";
+        state.groupCategory = "";
+        state.groupValue = "";
+        state.groupAggregation = "mean";
         els.columnSearch.value = "";
         if (els.clearColumnSearch) {
           els.clearColumnSearch.hidden = true;

@@ -14,7 +14,7 @@ function loadAppFunctions() {
 
   const appScript = match[1].replace(
     /\n\s*init\(\);\s*\n\s*\}\)\(\);\s*$/,
-    "\n      globalThis.__odaTest = { decodeCsvBuffer, parseCsv, analyzeDataset, filterAnalysisResults, sortAnalysisResults, buildAnalysisExport, getChartableColumns, buildHistogram, buildChartModel, parseDateTime, detectDateColumns, computeCorrelation, computeLinearFit, buildScatterModel, buildBoxModel, buildCrosstabModel, buildOverviewModel, buildTimeSeriesModel };\n    })();"
+    "\n      globalThis.__odaTest = { decodeCsvBuffer, parseCsv, analyzeDataset, filterAnalysisResults, sortAnalysisResults, buildAnalysisExport, getChartableColumns, buildHistogram, buildChartModel, buildEcdfModel, parseDateTime, detectDateColumns, computeCorrelation, computeLinearFit, buildScatterModel, buildBoxModel, buildCrosstabModel, buildOverviewModel, buildTimeSeriesModel, buildCorrelationMatrixModel, buildMissingMapModel, buildGroupBarModel, buildParallelModel };\n    })();"
   );
 
   function element() {
@@ -86,6 +86,7 @@ const {
   getChartableColumns,
   buildHistogram,
   buildChartModel,
+  buildEcdfModel,
   parseDateTime,
   detectDateColumns,
   computeCorrelation,
@@ -94,7 +95,11 @@ const {
   buildBoxModel,
   buildCrosstabModel,
   buildOverviewModel,
-  buildTimeSeriesModel
+  buildTimeSeriesModel,
+  buildCorrelationMatrixModel,
+  buildMissingMapModel,
+  buildGroupBarModel,
+  buildParallelModel
 } = loadAppFunctions();
 
 function plain(value) {
@@ -345,5 +350,185 @@ const lineSum = buildTimeSeriesModel({
   ]
 }, "日期", "數值", "sum");
 assert.strictEqual(lineSum.points[0].value, 40);
+
+const ecdfChart = buildChartModel(dataset, amount, "ecdf");
+assert.strictEqual(ecdfChart.type, "ecdf");
+assert.strictEqual(ecdfChart.title, "金額 累積分布圖 (ECDF)");
+assert.strictEqual(ecdfChart.unitLabel, "累積比例");
+assert.strictEqual(ecdfChart.n, 4);
+assert.strictEqual(ecdfChart.min, -5);
+assert.strictEqual(ecdfChart.max, 20);
+assert.deepStrictEqual(plain(ecdfChart.steps), [
+  { value: -5, cumulative: 0.25 },
+  { value: 0, cumulative: 0.5 },
+  { value: 10, cumulative: 0.75 },
+  { value: 20, cumulative: 1 }
+]);
+assert.strictEqual(ecdfChart.p25, -1.25);
+assert.strictEqual(ecdfChart.median, 5);
+assert.strictEqual(ecdfChart.p75, 12.5);
+
+const ecdfDuplicates = buildEcdfModel({ type: "數值", name: "t", p25: 1, median: 1, p75: 2 }, [1, 1, 2]);
+assert.strictEqual(ecdfDuplicates.n, 3);
+assert.strictEqual(ecdfDuplicates.steps.length, 2);
+assert.strictEqual(ecdfDuplicates.steps[0].value, 1);
+assert.strictEqual(ecdfDuplicates.steps[0].cumulative, 2 / 3);
+assert.strictEqual(ecdfDuplicates.steps[1].cumulative, 1);
+assert.strictEqual(buildEcdfModel({ type: "字串", name: "t" }, ["a"]), null);
+assert.strictEqual(buildEcdfModel({ type: "數值", name: "t" }, []), null);
+
+const correlationDataset = {
+  headers: ["a", "b", "c", "d", "e"],
+  rows: [
+    { a: "1", b: "2", c: "5", d: "x", e: "" },
+    { a: "2", b: "4", c: "4", d: "y", e: "" },
+    { a: "3", b: "6", c: "3", d: "x", e: "7" },
+    { a: "4", b: "8", c: "2", d: "z", e: "" },
+    { a: "5", b: "10", c: "1", d: "x", e: "" }
+  ]
+};
+const correlationAnalysis = analyzeDataset(correlationDataset);
+const correlationModel = buildCorrelationMatrixModel(correlationDataset, correlationAnalysis);
+assert.strictEqual(correlationModel.type, "correlation");
+assert.deepStrictEqual(plain(correlationModel.headers), ["a", "b", "c", "e"]);
+assert.strictEqual(correlationModel.columnCount, 4);
+assert.strictEqual(correlationModel.truncated, false);
+assert.strictEqual(correlationModel.matrix[0][1], 1);
+assert.strictEqual(correlationModel.matrix[1][0], 1);
+assert.strictEqual(correlationModel.matrix[0][2], -1);
+assert.strictEqual(correlationModel.matrix[2][0], -1);
+assert.strictEqual(correlationModel.matrix[0][3], null);
+assert.strictEqual(correlationModel.matrix[3][3], null);
+for (let i = 0; i < correlationModel.columnCount; i += 1) {
+  for (let j = 0; j < correlationModel.columnCount; j += 1) {
+    assert.strictEqual(correlationModel.matrix[i][j], correlationModel.matrix[j][i]);
+  }
+  if (i < 3) {
+    assert.strictEqual(correlationModel.matrix[i][i], 1);
+  }
+}
+assert.strictEqual(buildCorrelationMatrixModel({
+  headers: ["x", "y"],
+  rows: [{ x: "1", y: "a" }, { x: "2", y: "b" }]
+}, analyzeDataset({
+  headers: ["x", "y"],
+  rows: [{ x: "1", y: "a" }, { x: "2", y: "b" }]
+})), null);
+
+const missingMapDataset = {
+  headers: ["X", "Y", "Z", "W"],
+  rows: [
+    { X: "", Y: "1", Z: "a", W: "" },
+    { X: "", Y: "2", Z: "b", W: "" },
+    { X: "3", Y: "3", Z: "c", W: "" },
+    { X: "4", Y: "", Z: "d", W: "" },
+    { X: "5", Y: "5", Z: "e", W: "" },
+    { X: "6", Y: "6", Z: "f", W: "" }
+  ]
+};
+const missingMapAnalysis = analyzeDataset(missingMapDataset);
+const missingMapModel = buildMissingMapModel(missingMapDataset, missingMapAnalysis);
+assert.strictEqual(missingMapModel.type, "missingmap");
+assert.strictEqual(missingMapModel.rowCount, 6);
+assert.strictEqual(missingMapModel.bandCount, 6);
+assert.strictEqual(missingMapModel.bandSize, 1);
+assert.strictEqual(missingMapModel.sampled, false);
+assert.deepStrictEqual(plain(missingMapModel.bandRowCounts), [1, 1, 1, 1, 1, 1]);
+assert.strictEqual(missingMapModel.totalColumns, 4);
+assert.strictEqual(missingMapModel.totalMissing, 9);
+assert.strictEqual(missingMapModel.overallRate, 0.375);
+assert.deepStrictEqual(plain(missingMapModel.columns.map((column) => column.name)), ["X", "Y", "Z", "W"]);
+assert.deepStrictEqual(plain(missingMapModel.columns[0].bandValues), [1, 1, 0, 0, 0, 0]);
+assert.deepStrictEqual(plain(missingMapModel.columns[1].bandValues), [0, 0, 0, 1, 0, 0]);
+assert.deepStrictEqual(plain(missingMapModel.columns[2].bandValues), [0, 0, 0, 0, 0, 0]);
+assert.deepStrictEqual(plain(missingMapModel.columns[3].bandValues), [1, 1, 1, 1, 1, 1]);
+assert.strictEqual(missingMapModel.columns[0].allMissing, false);
+assert.strictEqual(missingMapModel.columns[3].allMissing, true);
+assert.strictEqual(missingMapModel.columns[3].missingCount, 6);
+assert.strictEqual(buildMissingMapModel({ headers: ["X"], rows: [] }, []), null);
+
+const groupBarDataset = {
+  headers: ["類別", "金額"],
+  rows: [
+    { "類別": "甲", "金額": "10" },
+    { "類別": "甲", "金額": "20" },
+    { "類別": "乙", "金額": "30" },
+    { "類別": "", "金額": "40" },
+    { "類別": "丙", "金額": "abc" }
+  ]
+};
+const groupMean = buildGroupBarModel(groupBarDataset, "類別", "金額", "mean");
+assert.strictEqual(groupMean.type, "groupbar");
+assert.strictEqual(groupMean.aggregation, "mean");
+assert.strictEqual(groupMean.categoryCount, 2);
+assert.strictEqual(groupMean.includedRows, 3);
+assert.strictEqual(groupMean.excludedRows, 2);
+assert.strictEqual(groupMean.collapsed, false);
+assert.strictEqual(groupMean.items.length, 2);
+assert.strictEqual(groupMean.items[0].label, "甲");
+assert.strictEqual(groupMean.items[0].value, 15);
+assert.strictEqual(groupMean.items[0].count, 2);
+assert.strictEqual(groupMean.items[1].label, "乙");
+assert.strictEqual(groupMean.items[1].value, 30);
+
+const groupMedian = buildGroupBarModel(groupBarDataset, "類別", "金額", "median");
+assert.strictEqual(groupMedian.aggregation, "median");
+assert.strictEqual(groupMedian.items[0].value, 15);
+
+const groupSum = buildGroupBarModel(groupBarDataset, "類別", "金額", "sum");
+assert.strictEqual(groupSum.aggregation, "sum");
+assert.strictEqual(groupSum.items[0].value, 30);
+assert.strictEqual(groupSum.items[1].value, 30);
+
+const groupBarNull = buildGroupBarModel(groupBarDataset, "類別", "類別", "mean");
+assert.strictEqual(groupBarNull, null);
+
+const manyCategoryRows = [];
+for (let i = 1; i <= 16; i += 1) {
+  const record = {};
+  record["類別"] = `類別${i}`;
+  record["金額"] = String(i);
+  manyCategoryRows.push(record);
+}
+const groupCollapsed = buildGroupBarModel({ headers: ["類別", "金額"], rows: manyCategoryRows }, "類別", "金額", "mean");
+assert.strictEqual(groupCollapsed.collapsed, true);
+assert.strictEqual(groupCollapsed.items.length, 15);
+assert.strictEqual(groupCollapsed.items[14].label, "其他 2 類");
+assert.strictEqual(groupCollapsed.items[14].count, 2);
+assert.strictEqual(groupCollapsed.items[14].value, 8.5);
+
+const parallelDataset = {
+  headers: ["a", "b", "c"],
+  rows: [
+    { a: "1", b: "2", c: "7" },
+    { a: "2", b: "4", c: "7" },
+    { a: "3", b: "6", c: "7" },
+    { a: "4", b: "", c: "7" }
+  ]
+};
+const parallelModel = buildParallelModel(parallelDataset, analyzeDataset(parallelDataset));
+assert.strictEqual(parallelModel.type, "parallel");
+assert.strictEqual(parallelModel.axes.length, 3);
+assert.strictEqual(parallelModel.keptRows, 3);
+assert.strictEqual(parallelModel.excluded, 1);
+assert.strictEqual(parallelModel.drawnLines, 3);
+assert.strictEqual(parallelModel.truncated, false);
+assert.strictEqual(parallelModel.axes[0].min, 1);
+assert.strictEqual(parallelModel.axes[0].max, 3);
+assert.strictEqual(parallelModel.axes[2].degenerate, true);
+assert.strictEqual(parallelModel.lines.length, 3);
+assert.deepStrictEqual(plain(parallelModel.lines[0]), [0, 0, 0.5]);
+assert.deepStrictEqual(plain(parallelModel.lines[2]), [1, 1, 0.5]);
+assert.strictEqual(parallelModel.medianLine.length, 3);
+assert.strictEqual(parallelModel.medianLine[0], 0.5);
+assert.strictEqual(parallelModel.medianLine[1], 0.5);
+assert.strictEqual(parallelModel.medianLine[2], 0.5);
+assert.strictEqual(buildParallelModel({
+  headers: ["x", "y"],
+  rows: [{ x: "1", y: "a" }, { x: "2", y: "b" }]
+}, analyzeDataset({
+  headers: ["x", "y"],
+  rows: [{ x: "1", y: "a" }, { x: "2", y: "b" }]
+})), null);
 
 console.log("encoding tests passed");
